@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore",category=ImportWarning)
 
 from jwt_generate import generate_token
 from db_connect import connect
+from wallet_utils import verify_signature
 import requests
 from flask_bcrypt import Bcrypt # type: ignore
 import jwt
@@ -160,6 +161,24 @@ def verify_token(user):
         "valid": True,
         "user": user["username"]
     }), 200
+
+@app.route('/verify_wallet', methods=['POST'])
+@check_token
+def verify_wallet(user):
+    data = request.json
+    wallet_address = data['wallet_address']
+    signature = data['signature']
+    
+    if not verify_signature(wallet_address, signature):
+        return jsonify({"error": "Invalid signature"}), 400
+    
+    # Update user in database
+    user_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"wallet": wallet_address}}
+    )
+    
+    return jsonify({"message": "Wallet verified"}), 200
 
 if __name__=="__main__":
     app.run(debug=True)

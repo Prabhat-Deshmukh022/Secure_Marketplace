@@ -1,9 +1,10 @@
+import json
 import streamlit as st
 import requests
 from datetime import datetime
 import warnings
 from streamlit.deprecation_util import make_deprecated_name_warning
-
+from streamlit_javascript import st_javascript
 # Suppress experimental query params warning
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -17,16 +18,22 @@ API_URL = "http://127.0.0.1:5000"
 def main():
     st.set_page_config(page_title="Secure Digital Asset Marketplace", layout="wide")
     
-    # Initialize ALL session state variables
+     # Initialize ALL session state variables
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "current_user" not in st.session_state:
         st.session_state.current_user = None
     if "token" not in st.session_state:
         st.session_state.token = None
-    if "show_signup" not in st.session_state:  # Add this line
-        st.session_state.show_signup = False   # Default to showing login page
-    
+    if "show_signup" not in st.session_state:
+        st.session_state.show_signup = False
+    # Add these wallet-specific initializations
+    if "wallet_connected" not in st.session_state:
+        st.session_state.wallet_connected = False
+    if "wallet_address" not in st.session_state:
+        st.session_state.wallet_address = None
+    if "wallet_data" not in st.session_state:
+        st.session_state.wallet_data = None
     # Check for existing token on page load
     if not st.session_state.authenticated and not st.session_state.token:
         check_existing_session()
@@ -37,6 +44,7 @@ def main():
     elif not st.session_state.authenticated:
         show_login()
     else:
+        # register_wallet_listener()
         show_home()
     
 def check_existing_session():
@@ -156,15 +164,167 @@ def show_home():
     
     st.title("Welcome to the Secure Marketplace")
     st.write("This platform allows secure exchange of digital assets using blockchain and IPFS.")
-    
-    wallet_id = st.text_input("Enter your MetaMask Wallet ID to connect", value="0x123456789ABCDEF")
-    if st.button("Connect Wallet"):
-        st.success("Wallet Connected: " + wallet_id)
-    
+
+    # Initialize wallet connection state
+    if 'wallet_connected' not in st.session_state:
+        st.session_state.wallet_connected = False
+    if 'wallet_address' not in st.session_state:
+        st.session_state.wallet_address = None
+
+    # Wallet Connection Section
+    if not st.session_state.wallet_connected:
+        with st.expander("🔗 Connect MetaMask Wallet"):
+            # Inject the Web3 connection script and button
+            connect_js = """
+            <script>
+            async function requestSignature() {
+                console.log("Checking for window.ethereum...");
+                
+                if (!window.ethereum) {
+                    console.log("window.ethereum is NOT available. Trying different detection methods...");
+                    if (window.parent && window.parent.ethereum) {
+                        console.log("Detected inside an iframe! Using window.parent.ethereum.");
+                        window.ethereum = window.parent.ethereum;
+                    } else {
+                        alert("MetaMask not detected! Try opening this page in a new tab.");
+                        return;
+                    }
+                }
+
+                console.log("MetaMask detected, requesting accounts...");
+                try {
+                    const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+                    console.log("Accounts:", accounts);
+                    
+                    if (accounts.length === 0) {
+                        alert("No accounts found!");
+                        return;
+                    }
+                    
+                    const message = "Auth for " + accounts[0] + " (Testnet)";
+                    console.log("Signing message:", message);
+
+                    const signature = await ethereum.request({
+                        method: 'personal_sign',
+                        params: [message, accounts[0]]
+                    });
+
+                    console.log("Signature received:", signature);
+
+                    // Send data back to Streamlit
+                    const walletData = {
+                        type: 'WALLET_CONNECTED',
+                        address: accounts[0],
+                        signature: signature
+                    };
+                    
+                    // Using Streamlit's setComponentValue to send data back
+                    //window.parent.streamlitBridge.setComponentValue(JSON.stringify(walletData));
+                    windows.walletData=JSON.stringify(walletData);
+
+                    
+
+                } catch (error) {
+                    console.error("MetaMask Error:", error);
+                    alert("MetaMask Signature Failed! Check console.");
+                }
+            }
+            </script>
+
+            <button onclick="requestSignature()">Sign with MetaMask</button>
+            """
+
+            # Use Streamlit's components to handle the response
+            st.components.v1.html(connect_js, height=100)
+            wallet_data=st_javascript("window.walletData")
+            
+            
+            try:
+                if wallet_data:
+                    data = json.loads(wallet_data)
+                    st.session_state.wallet_data = data
+
+                    # Send request to Flask backend
+                    response = requests.post(
+                        f"{API_URL}/verify_wallet",
+                        json={
+                            "wallet_address": data["address"],
+                            "signature": data["signature"]
+                        },
+                        headers={"Authorization": f"Bearer {st.session_state.token}"}
+                    )
+
+                    if response.status_code == 200:
+                        st.session_state.wallet_connected = True
+                        st.session_state.wallet_address = data["address"]
+                        st.experimental_rerun()  # Refresh to show connected state
+                    else:
+                        st.error("❌ Wallet verification failed")
+            except:
+                pass  # No data received yet
+
+    # Display connection status
+    if st.session_state.wallet_connected:
+        st.success(f"🔗 Connected: {st.session_state.wallet_address[:6]}...{st.session_state.wallet_address[-4:]}")
+
     if page == "My Assets":
         show_my_assets()
     elif page == "Marketplace":
         show_marketplace()
+
+# Function to inject JavaScript to listen for wallet data
+def register_wallet_listener():
+    listen_js = """
+    <script>
+    window.addEventListener("message", (event) => {
+        if (event.data && event.data.type === "WALLET_CONNECTED") {
+            console.log("📨 Received wallet data in Streamlit:", event.data);
+            const walletData = JSON.stringify(event.data);
+
+            // Send the data back to Streamlit via a hidden input field
+            const inputField = document.getElementById("wallet_data");
+            if (inputField) {
+                inputField.value = walletData;
+                inputField.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        }
+    });
+    </script>
+    <input type="hidden" id="wallet_data">
+    """
+
+    # Inject the JS listener into Streamlit
+    wallet_data = st.text_input("Wallet Data", key="wallet_data", value="", label_visibility="collapsed")
+
+    # Process the wallet data if received
+    if wallet_data:
+        try:
+            data = json.loads(wallet_data)
+            st.session_state.wallet_data = data  # Store it in session state
+
+            # Send request to Flask backend
+            response = requests.post(
+                f"{API_URL}/verify_wallet",
+                json={
+                    "wallet_address": data["address"],
+                    "signature": data["signature"]
+                },
+                headers={"Authorization": f"Bearer {st.session_state.token}"}
+            )
+
+            if response.status_code == 200:
+                st.session_state.wallet_connected = True
+                st.session_state.wallet_address = data["address"]
+                st.success(f"✅ Wallet verified: {data['address']}")
+            else:
+                st.error("❌ Wallet verification failed")
+
+        except Exception as e:
+            st.error("Failed to parse wallet data.")
+            st.write(str(e))
+
+    # Inject the listener script
+    st.components.v1.html(listen_js, height=0)
 
 def logout_user():
     try:
