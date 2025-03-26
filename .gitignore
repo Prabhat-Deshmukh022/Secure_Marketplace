@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 
-*.txt
+inference.txt
 
 # Distribution / packaging
 .Python
