@@ -6,3 +6,5 @@ flask-bcrypt==1.0.1            # Password hashing with bcrypt
 pyjwt==2.8.0                   # JWT (JSON Web Token) for authentication
 python-dotenv
 web3
+ipfshttpclient
+python-multipart

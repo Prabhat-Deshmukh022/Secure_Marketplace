@@ -6,6 +6,7 @@ import warnings
 from streamlit.deprecation_util import make_deprecated_name_warning
 from streamlit_javascript import st_javascript
 # Suppress experimental query params warning
+import time
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Create a session object to handle cookies
@@ -98,11 +99,14 @@ def show_login():
                 # In your login function, after successful auth:
                 if response.status_code == 200:
                     token = response.cookies.get("token")
+                    if not st.session_state.current_user:
+                        st.session_state.current_user=response.json()['username']
                     if token:
                         st.session_state.token = token
                         # Correct way to set query param
                         st.query_params["token"] = token
                         st.session_state.authenticated = True
+                        # st.session_state.current_user = token
                         st.rerun()
                     else:
                         st.error("Login failed - no token received")
@@ -152,16 +156,363 @@ def show_signup():
         st.session_state.show_signup = False  # Clear the flag
         st.rerun()  # Force rerun to show login page
 
+def clear_storage():
+    st.components.v1.html(
+        """
+        <script>
+        // ✅ Clear localStorage on page load
+        window.localStorage.removeItem("walletData");
+        console.log("Cleared walletData from localStorage");
+        </script>
+        """,
+        height=10
+    )
+
+# def show_home():
+
+#     st.sidebar.title("Navigation")
+#     page = st.sidebar.radio("Go to", ["My Assets", "Marketplace"])
+
+#     # Display user info and logout button in sidebar
+#     st.sidebar.markdown("---")
+#     st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
+#     if st.sidebar.button("Logout"):
+#         logout_user()
+
+#     st.title("Welcome to the Secure Marketplace")
+#     st.write("This platform allows secure exchange of digital assets using blockchain and IPFS.")
+
+#     # Initialize wallet connection state
+#     if 'wallet_connected' not in st.session_state:
+#         st.session_state.wallet_connected = False
+#     if 'wallet_address' not in st.session_state:
+#         st.session_state.wallet_address = None
+
+#     # Wallet Connection Section
+#     if not st.session_state.wallet_connected:
+#         with st.expander("🔗 Connect MetaMask Wallet"):
+#             # Inject JavaScript for MetaMask connection
+            # connect_js = """
+            # <script>
+            # async function requestSignature() {
+            #     console.log("Checking for window.ethereum...");
+                
+            #     if (!window.ethereum) {
+            #         console.log("window.ethereum is NOT available. Trying different detection methods...");
+            #         if (window.parent && window.parent.ethereum) {
+            #             console.log("Detected inside an iframe! Using window.parent.ethereum.");
+            #             window.ethereum = window.parent.ethereum;
+            #         } else {
+            #             alert("MetaMask not detected! Try opening this page in a new tab.");
+            #             return null;
+            #         }
+            #     }
+
+            #     console.log("MetaMask detected, requesting accounts...");
+            #     try {
+            #         const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+            #         console.log("Accounts:", accounts);
+                    
+            #         if (accounts.length === 0) {
+            #             alert("No accounts found!");
+            #             return null;
+            #         }
+                    
+            #         const message = "Auth for " + accounts[0] + " (Testnet)";
+            #         console.log("Signing message:", message);
+
+            #         let signature;
+            #         try {
+            #             signature = await ethereum.request({
+            #                 method: 'personal_sign',
+            #                 params: [message, accounts[0]]
+            #             });
+            #         } catch (signError) {
+            #             console.error("Error during signing:", signError);
+            #             alert("Failed to sign the message. Please check the console.");
+            #             return null;
+            #         }
+
+            #         if (!signature) {
+            #             console.error("Signature is undefined or null.");
+            #             return null;
+            #         }
+
+            #         console.log("Signature received:", signature);
+
+            #         // Store in localStorage
+            #         const walletData = JSON.stringify({
+            #             type: 'WALLET_CONNECTED',
+            #             address: accounts[0],
+            #             signature: signature
+            #         });
+
+            #         console.log("Storing wallet data in localStorage:", walletData);
+            #         window.localStorage.setItem("walletData", walletData);
+
+            #         return walletData;
+
+            #     } catch (error) {
+            #         console.error("MetaMask Error:", error);
+            #         alert("MetaMask Signature Failed! Check console.");
+            #         return null;
+            #     }
+            # }
+
+            # function callRequestSignature() {
+            #     requestSignature().then(data => {
+            #         if (data) {
+            #             console.log("Wallet data successfully stored in localStorage.");
+            #         } else {
+            #             console.log("Failed to store wallet data.");
+            #         }
+            #     });
+            # }
+            # </script>
+
+            # <button onclick="callRequestSignature()">Sign with MetaMask</button>
+            # """
+
+#             st.components.v1.html(connect_js, height=100)
+
+#             wallet_data= st_javascript("window.localStorage.getItem('walletData')")
+
+#             if wallet_data:
+#                 try:
+#                     data = json.loads(wallet_data)  # Convert JSON string to dictionary
+#                     st.session_state.wallet_data = data  # Store in session state
+
+#                     # Send request to Flask backend for verification
+#                     response = requests.post(
+#                         f"{API_URL}/verify_wallet",
+#                         json={
+#                             "wallet_address": data["address"],
+#                             "signature": data["signature"]
+#                         },
+#                         headers={"Authorization": f"Bearer {st.session_state.token}"}
+#                     )
+
+#                     if response.status_code == 200:
+#                         st.session_state.wallet_connected = True
+#                         st.session_state.wallet_address = data["address"]
+#                         st.rerun()  # Refresh to show connected state
+#                     else:
+#                         st.error("❌ Wallet verification failed")
+#                 except Exception as e:
+#                     st.error(f"Error processing wallet data: {e}")
+#             else:
+#                 st.warning("⚠️ No wallet data found. Please connect your wallet.")
+
+#     # Display connection status
+#     if st.session_state.wallet_connected:
+#         st.success(f"🔗 Connected: {st.session_state.wallet_address[:6]}...{st.session_state.wallet_address[-4:]}")
+
+#     if page == "My Assets":
+#         show_my_assets()
+#     elif page == "Marketplace":
+#         show_marketplace()
+
+# def show_home():
+#     st.sidebar.title("Navigation")
+#     page = st.sidebar.radio("Go to", ["My Assets", "Marketplace"])
+
+#     # Display user info and logout button in sidebar
+#     st.sidebar.markdown("---")
+#     st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
+#     if st.sidebar.button("Logout"):
+#         logout_user()
+
+#     st.title("Welcome to the Secure Marketplace")
+#     st.write("This platform allows secure exchange of digital assets using blockchain and IPFS.")
+
+#     # Initialize wallet connection state
+#     if 'wallet_connected' not in st.session_state:
+#         st.session_state.wallet_connected = False
+#     if 'wallet_address' not in st.session_state:
+#         st.session_state.wallet_address = None
+#     if 'waiting_for_wallet' not in st.session_state:
+#         st.session_state.waiting_for_wallet = False
+
+#     # Wallet Connection Section
+#     if not st.session_state.wallet_connected:
+#         with st.expander("🔗 Connect MetaMask Wallet"):
+#             if st.session_state.waiting_for_wallet:
+#                 st.warning("Waiting for wallet connection...")
+#                 # Show a spinner while waiting
+#                 with st.spinner("Please sign the message in MetaMask..."):
+#                     # Poll for wallet data
+#                     wallet_data = st_javascript("window.localStorage.getItem('walletData')")
+                    
+#                     if wallet_data:
+#                         try:
+#                             data = json.loads(wallet_data)
+#                             st.session_state.wallet_data = data
+                            
+#                             # Send request to Flask backend for verification
+#                             response = requests.post(
+#                                 f"{API_URL}/verify_wallet",
+#                                 json={
+#                                     "wallet_address": data["address"],
+#                                     "signature": data["signature"]
+#                                 },
+#                                 headers={"Authorization": f"Bearer {st.session_state.token}"}
+#                             )
+
+#                             if response.status_code == 200:
+#                                 st.session_state.wallet_connected = True
+#                                 st.session_state.wallet_address = data["address"]
+#                                 st.session_state.waiting_for_wallet = False
+#                                 st.rerun()
+#                             else:
+#                                 st.error("❌ Wallet verification failed")
+#                                 st.session_state.waiting_for_wallet = False
+#                         except Exception as e:
+#                             st.error(f"Error processing wallet data: {e}")
+#                             st.session_state.waiting_for_wallet = False
+#                     else:
+#                         # If after waiting we still don't have data, show timeout
+#                         time.sleep(2)  # Wait a bit before checking again
+#                         if not wallet_data:
+#                             st.error("Wallet connection timed out. Please try again.")
+#                             st.session_state.waiting_for_wallet = False
+#                             st.rerun()
+#             else:
+#                 # Inject JavaScript for MetaMask connection
+#                 connect_js = """
+#                 <script>
+#                 async function requestSignature() {
+#                     console.log("Checking for window.ethereum...");
+                    
+#                     if (!window.ethereum) {
+#                         console.log("window.ethereum is NOT available. Trying different detection methods...");
+#                         if (window.parent && window.parent.ethereum) {
+#                             console.log("Detected inside an iframe! Using window.parent.ethereum.");
+#                             window.ethereum = window.parent.ethereum;
+#                         } else {
+#                             alert("MetaMask not detected! Try opening this page in a new tab.");
+#                             return null;
+#                         }
+#                     }
+
+#                     console.log("MetaMask detected, requesting accounts...");
+#                     try {
+#                         const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+#                         console.log("Accounts:", accounts);
+                        
+#                         if (accounts.length === 0) {
+#                             alert("No accounts found!");
+#                             return null;
+#                         }
+                        
+#                         const message = "Auth for " + accounts[0] + " (Testnet)";
+#                         console.log("Signing message:", message);
+
+#                         let signature;
+#                         try {
+#                             signature = await ethereum.request({
+#                                 method: 'personal_sign',
+#                                 params: [message, accounts[0]]
+#                             });
+#                         } catch (signError) {
+#                             console.error("Error during signing:", signError);
+#                             alert("Failed to sign the message. Please check the console.");
+#                             return null;
+#                         }
+
+#                         if (!signature) {
+#                             console.error("Signature is undefined or null.");
+#                             return null;
+#                         }
+
+#                         console.log("Signature received:", signature);
+
+#                         // Store in localStorage
+#                         const walletData = JSON.stringify({
+#                             type: 'WALLET_CONNECTED',
+#                             address: accounts[0],
+#                             signature: signature
+#                         });
+
+#                         console.log("Storing wallet data in localStorage:", walletData);
+#                         window.localStorage.setItem("walletData", walletData);
+
+#                         return walletData;
+
+#                     } catch (error) {
+#                         console.error("MetaMask Error:", error);
+#                         alert("MetaMask Signature Failed! Check console.");
+#                         return null;
+#                     }
+#                 }
+
+#                 function callRequestSignature() {
+#                     requestSignature().then(data => {
+#                         if (data) {
+#                             console.log("Wallet data successfully stored in localStorage.");
+#                             // Notify Streamlit that we have data
+#                             window.parent.postMessage({type: 'WALLET_CONNECTED'}, '*');
+#                         } else {
+#                             console.log("Failed to store wallet data.");
+#                         }
+#                     });
+#                 }
+#                 </script>
+
+#                 <button onclick="callRequestSignature()">Sign with MetaMask</button>
+#                 """
+
+#                 st.components.v1.html(connect_js, height=100)
+                
+#                 # Check for existing wallet data
+#                 wallet_data = st_javascript("window.localStorage.getItem('walletData')")
+                
+#                 if wallet_data:
+#                     try:
+#                         data = json.loads(wallet_data)
+#                         st.session_state.wallet_data = data
+                        
+#                         # Send request to Flask backend for verification
+#                         response = requests.post(
+#                             f"{API_URL}/verify_wallet",
+#                             json={
+#                                 "wallet_address": data["address"],
+#                                 "signature": data["signature"]
+#                             },
+#                             headers={"Authorization": f"Bearer {st.session_state.token}"}
+#                         )
+
+#                         if response.status_code == 200:
+#                             st.session_state.wallet_connected = True
+#                             st.session_state.wallet_address = data["address"]
+#                             st.rerun()
+#                         else:
+#                             st.error("❌ Wallet verification failed")
+#                     except Exception as e:
+#                         st.error(f"Error processing wallet data: {e}")
+#                 else:
+#                     if st.button("Connect Wallet"):
+#                         st.session_state.waiting_for_wallet = True
+#                         st.rerun()
+
+#     # Display connection status
+#     if st.session_state.wallet_connected:
+#         st.success(f"🔗 Connected: {st.session_state.wallet_address[:6]}...{st.session_state.wallet_address[-4:]}")
+
+#     if page == "My Assets":
+#         show_my_assets()
+#     elif page == "Marketplace":
+#         show_marketplace()
+
 def show_home():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to", ["My Assets", "Marketplace"])
-    
+
     # Display user info and logout button in sidebar
     st.sidebar.markdown("---")
     st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
     if st.sidebar.button("Logout"):
         logout_user()
-    
+
     st.title("Welcome to the Secure Marketplace")
     st.write("This platform allows secure exchange of digital assets using blockchain and IPFS.")
 
@@ -173,8 +524,9 @@ def show_home():
 
     # Wallet Connection Section
     if not st.session_state.wallet_connected:
-        with st.expander("🔗 Connect MetaMask Wallet"):
-            # Inject the Web3 connection script and button
+        with st.expander("🔗 Connect MetaMask Wallet", expanded=True):
+            # Step 1: Sign with MetaMask
+            st.markdown("**Step 1:** Sign with MetaMask")
             connect_js = """
             <script>
             async function requestSignature() {
@@ -187,7 +539,7 @@ def show_home():
                         window.ethereum = window.parent.ethereum;
                     } else {
                         alert("MetaMask not detected! Try opening this page in a new tab.");
-                        return;
+                        return null;
                     }
                 }
 
@@ -198,70 +550,111 @@ def show_home():
                     
                     if (accounts.length === 0) {
                         alert("No accounts found!");
-                        return;
+                        return null;
                     }
                     
                     const message = "Auth for " + accounts[0] + " (Testnet)";
                     console.log("Signing message:", message);
 
-                    const signature = await ethereum.request({
-                        method: 'personal_sign',
-                        params: [message, accounts[0]]
-                    });
+                    let signature;
+                    try {
+                        signature = await ethereum.request({
+                            method: 'personal_sign',
+                            params: [message, accounts[0]]
+                        });
+                    } catch (signError) {
+                        console.error("Error during signing:", signError);
+                        alert("Failed to sign the message. Please check the console.");
+                        return null;
+                    }
+
+                    if (!signature) {
+                        console.error("Signature is undefined or null.");
+                        return null;
+                    }
 
                     console.log("Signature received:", signature);
 
-                    // Send data back to Streamlit
-                    const walletData = {
+                    // Store in localStorage
+                    const walletData = JSON.stringify({
                         type: 'WALLET_CONNECTED',
                         address: accounts[0],
                         signature: signature
-                    };
-                    
-                    // Using Streamlit's setComponentValue to send data back
-                    //window.parent.streamlitBridge.setComponentValue(JSON.stringify(walletData));
-                    windows.walletData=JSON.stringify(walletData);
+                    });
 
-                    
+                    console.log("Storing wallet data in localStorage:", walletData);
+                    window.localStorage.setItem("walletData", walletData);
+
+                    return walletData;
 
                 } catch (error) {
                     console.error("MetaMask Error:", error);
                     alert("MetaMask Signature Failed! Check console.");
+                    return null;
                 }
+            }
+
+            function callRequestSignature() {
+                requestSignature().then(data => {
+                    if (data) {
+                        console.log("Wallet data successfully stored in localStorage.");
+                    } else {
+                        console.log("Failed to store wallet data.");
+                    }
+                });
             }
             </script>
 
-            <button onclick="requestSignature()">Sign with MetaMask</button>
+            <button onclick="callRequestSignature()">Sign with MetaMask</button>
             """
-
-            # Use Streamlit's components to handle the response
+            
             st.components.v1.html(connect_js, height=100)
-            wallet_data=st_javascript("window.walletData")
             
+            # Step 2: Connect to Backend
+            st.markdown("**Step 2:** Connect to backend")
+            wallet_data = st_javascript("window.localStorage.getItem('walletData')")
             
-            try:
-                if wallet_data:
-                    data = json.loads(wallet_data)
-                    st.session_state.wallet_data = data
+            if wallet_data:
+                if st.button("Connect Wallet", type="primary"):
+                    try:
+                        data = json.loads(wallet_data)
+                        
+                        with st.spinner("Verifying wallet..."):
+                            response = requests.post(
+                                f"{API_URL}/verify_wallet",
+                                json={
+                                    "wallet_address": data["address"],
+                                    "signature": data["signature"]
+                                },
+                                headers={"Authorization": f"Bearer {st.session_state.token}"}
+                            )
 
-                    # Send request to Flask backend
-                    response = requests.post(
-                        f"{API_URL}/verify_wallet",
-                        json={
-                            "wallet_address": data["address"],
-                            "signature": data["signature"]
-                        },
-                        headers={"Authorization": f"Bearer {st.session_state.token}"}
-                    )
+                        if response.status_code == 200:
+                            st.session_state.wallet_connected = True
+                            st.session_state.wallet_address = data["address"]
+                            st.rerun()
+                        else:
+                            st.error("Wallet verification failed. Please try again.")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+            else:
+                st.warning("Please sign with MetaMask first")
 
-                    if response.status_code == 200:
-                        st.session_state.wallet_connected = True
-                        st.session_state.wallet_address = data["address"]
-                        st.experimental_rerun()  # Refresh to show connected state
-                    else:
-                        st.error("❌ Wallet verification failed")
-            except:
-                pass  # No data received yet
+            # Add JavaScript to handle the refresh
+            st.components.v1.html("""
+            <script>
+            window.addEventListener('message', (event) => {
+                if (event.data.type === 'WALLET_SIGNED') {
+                    // Trigger Streamlit rerun
+                    window.parent.document.querySelectorAll('iframe').forEach(iframe => {
+                        if (iframe.src.includes('streamlit')) {
+                            iframe.contentWindow.postMessage({type: 'RERUN'}, '*');
+                        }
+                    });
+                }
+            });
+            </script>
+            """, height=0)
 
     # Display connection status
     if st.session_state.wallet_connected:
@@ -270,63 +663,10 @@ def show_home():
     if page == "My Assets":
         show_my_assets()
     elif page == "Marketplace":
-        show_marketplace()
-
-# Function to inject JavaScript to listen for wallet data
-def register_wallet_listener():
-    listen_js = """
-    <script>
-    window.addEventListener("message", (event) => {
-        if (event.data && event.data.type === "WALLET_CONNECTED") {
-            console.log("📨 Received wallet data in Streamlit:", event.data);
-            const walletData = JSON.stringify(event.data);
-
-            // Send the data back to Streamlit via a hidden input field
-            const inputField = document.getElementById("wallet_data");
-            if (inputField) {
-                inputField.value = walletData;
-                inputField.dispatchEvent(new Event("input", { bubbles: true }));
-            }
-        }
-    });
-    </script>
-    <input type="hidden" id="wallet_data">
-    """
-
-    # Inject the JS listener into Streamlit
-    wallet_data = st.text_input("Wallet Data", key="wallet_data", value="", label_visibility="collapsed")
-
-    # Process the wallet data if received
-    if wallet_data:
-        try:
-            data = json.loads(wallet_data)
-            st.session_state.wallet_data = data  # Store it in session state
-
-            # Send request to Flask backend
-            response = requests.post(
-                f"{API_URL}/verify_wallet",
-                json={
-                    "wallet_address": data["address"],
-                    "signature": data["signature"]
-                },
-                headers={"Authorization": f"Bearer {st.session_state.token}"}
-            )
-
-            if response.status_code == 200:
-                st.session_state.wallet_connected = True
-                st.session_state.wallet_address = data["address"]
-                st.success(f"✅ Wallet verified: {data['address']}")
-            else:
-                st.error("❌ Wallet verification failed")
-
-        except Exception as e:
-            st.error("Failed to parse wallet data.")
-            st.write(str(e))
-
-    # Inject the listener script
-    st.components.v1.html(listen_js, height=0)
+        show_marketplace()# Function to inject JavaScript to listen for wallet data
 
 def logout_user():
+    # clear_storage()
     try:
         if st.session_state.token:
             # Prepare both cookies and headers
@@ -356,40 +696,115 @@ def logout_user():
 
 def show_my_assets():
     st.title("My Digital Assets")
-    st.write("Upload your digital assets securely to IPFS and put them for sale.")
     
-    with st.form("upload_asset_form"):
-        asset_name = st.text_input("Asset Name")
-        asset_description = st.text_area("Description")
-        price_range = st.text_input("Price Range (ETH)")
-        expiry_date = st.date_input("Expiry Date")
-        file = st.file_uploader("Upload Asset", type=["png", "jpg", "mp4", "pdf"])
-        submit = st.form_submit_button("Upload Asset")
+    # Initialize form data in session state
+    if 'form_data' not in st.session_state:
+        st.session_state.form_data = {
+            'asset_name': '',
+            'description': '',
+            'price': 0.0,
+            'file_bytes': None,
+            'file_name': None,
+            'file_type': None
+        }
+
+    with st.form("upload_asset_form", clear_on_submit=True):
+        st.subheader("Upload New Asset")
         
-        if submit and file:
-            asset_id = "QmTest123..."  # Fake IPFS ID for testing
-            st.success(f"Asset uploaded! IPFS ID: {asset_id}")
+        asset_name = st.text_input("Asset Name*", value=st.session_state.form_data['asset_name'])
+        description = st.text_area("Description", value=st.session_state.form_data['description'])
+        price = st.number_input("Price*", value=float(st.session_state.form_data['price']), min_value=0.0, step=0.01)
+        file = st.file_uploader("Asset File*", type=["png", "jpg", "jpeg", "gif", "mp4", "mov", "pdf", "glb"])
+
+        submitted = st.form_submit_button("Upload to IPFS")
+        
+        if submitted:
+            if not all([asset_name, file]):
+                st.error("Please fill all required fields (*)")
+            else:
+                try:
+                    # Store file bytes immediately
+                    file_bytes = file.getvalue()
+                    
+                    with st.spinner("Uploading to IPFS..."):
+                        # Prepare the request properly
+                        files = {
+                            'file': (file.name, file_bytes, file.type)
+                        }
+                        data = {
+                            'name': asset_name,
+                            'description': description,
+                            'price': str(price)
+                        }
+                        headers = {
+                            'Authorization': f'Bearer {st.session_state.token}'
+                        }
+                        
+                        response = requests.post(
+                            f"{API_URL}/upload_asset",
+                            files=files,
+                            data=data,
+                            headers=headers
+                        )
+                        
+                        if response.status_code == 200:
+                            st.success("Upload successful!")
+                            # Reset form
+                            st.session_state.form_data = {
+                                'asset_name': '',
+                                'description': '',
+                                'price': 0.0,
+                                'file_bytes': None,
+                                'file_name': None,
+                                'file_type': None
+                            }
+                            st.rerun()
+                        else:
+                            st.error(f"Upload failed: {response.text}")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
     
-    st.write("**Your Uploaded Assets:**")
-    
-    # Mock asset data
-    mock_assets = [
-        {"name": "Digital Art #1", "ipfs_id": "QmArt123...", "price": "0.3 ETH", "status": "Available"},
-        {"name": "Rare Music Track", "ipfs_id": "QmMusic456...", "price": "1.2 ETH", "status": "Unavailable"},
-    ]
-    
-    for asset in mock_assets:
-        st.write(f"**{asset['name']}**")
-        st.write(f"🔗 IPFS ID: {asset['ipfs_id']}") 
-        st.write(f"💰 Price: {asset['price']}")
-        st.write(f"📌 Status: {asset['status']}")
-        if asset["status"] == "Available":
-            if st.button(f"Mark '{asset['name']}' as Unavailable", key=f"unavailable_{asset['ipfs_id']}"):
-                st.warning(f"{asset['name']} is now unavailable.")
+    st.subheader("Your Assets")
+    display_user_assets()
+
+def display_user_assets():
+    """Fetch and display user's assets from backend"""
+    try:
+        response = session.get(
+            f"{API_URL}/user_assets",
+            headers={"Authorization": f"Bearer {st.session_state.token}"}
+        )
+        
+        if response.status_code == 200:
+            assets = response.json().get("assets", [])
+            
+            if not assets:
+                st.info("You haven't uploaded any assets yet")
+                return
+                
+            for asset in assets:
+                with st.container():
+                    col1, col2 = st.columns([1, 3])
+                    
+                    with col1:
+                        st.write(f"📄 {asset['file_name']}")
+                    
+                    with col2:
+                        st.subheader(asset["name"])
+                        st.write(asset["description"])
+                        st.write(f"🆔 IPFS CID: `{asset['ipfs_hash']}`")
+                        st.write(f"💰 Price: {asset['price']} ETH")
+                        st.write(f"📅 Uploaded: {asset['created_at']}")
+                        
+                        if st.button("View Details", key=f"view_{asset['ipfs_hash']}"):
+                            st.session_state.current_asset = asset
+                            st.rerun()
+                    
+                    st.markdown("---")
         else:
-            if st.button(f"Put '{asset['name']}' for Sale", key=f"available_{asset['ipfs_id']}"):
-                st.success(f"{asset['name']} is now available for sale!")
-        st.markdown("---")
+            st.error("Failed to fetch assets")
+    except Exception as e:
+        st.error(f"Error loading assets: {str(e)}")
 
 def show_marketplace():
     st.title("Marketplace")
