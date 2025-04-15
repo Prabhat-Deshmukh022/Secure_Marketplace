@@ -127,7 +127,13 @@ def login():
 
     print(token)
 
-    response = make_response(jsonify({"message": "User logged in!","username":f"{user["username"]}"}), 200)
+    response = make_response(
+        jsonify({
+            "message": "User logged in!",
+            "username": user["username"]
+        }), 
+        200
+    )
     response.set_cookie("token", token, httponly=True, secure=False, samesite='Lax')
 
     return response
