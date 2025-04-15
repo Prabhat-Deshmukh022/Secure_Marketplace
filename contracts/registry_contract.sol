@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "./SecureImageSharing.sol";
-import "./KeyManagement.sol";
+import "./image_share.sol";
+import "./encryption_key.sol";
 
 contract ImageSharingRegistry {
     SecureImageSharing public imageSharing;
