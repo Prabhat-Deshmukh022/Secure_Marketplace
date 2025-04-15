@@ -14,9 +14,14 @@ from dateutil.relativedelta import relativedelta
 import os
 from functools import wraps
 import datetime
+from blockchain_manager import BlockchainManager
+
+ # type: ignore
 
 
 load_dotenv()
+
+blockchain_manager = BlockchainManager()
 
 SECRET=os.getenv("SECRET_KEY")
 
