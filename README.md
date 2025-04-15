@@ -10,6 +10,8 @@ A secure platform for trading digital assets using blockchain principles, featur
 - Streamlit frontend with persistent sessions
 - MongoDB user management
 - IPFS asset storage
+- Security powered by cryptography
+- Transperency and automation via smart contracts
 
 ## 🌟 Features
 
@@ -23,22 +25,25 @@ A secure platform for trading digital assets using blockchain principles, featur
 - Upload digital assets with metadata
 - Browse available assets
 - Purchase system
+- All powered by Blockchain to ensure security and transperency.
 
 ### Tech Stack
-| Component       | Technology               |
-|-----------------|--------------------------|
-| Backend         | Flask (Python)           |
-| Frontend        | Streamlit                |
-| Database        | MongoDB                  |
-| Authentication  | JWT (PyJWT)              |
-| Security        | bcrypt, HTTP-only cookies|
+| Component        | Technology               |
+|------------------|--------------------------|
+| Backend          | Flask (Python)           |
+| Frontend         | Streamlit                |
+| Database         | MongoDB                  |
+| Authentication   | JWT (PyJWT)              |
+| Security         | bcrypt, HTTP-only cookies|
+| Decentralization | Solidity, IPFS storage   |
 
 ## 🛠 Setup
 
 ### Prerequisites
 - Python 3.9+
 - MongoDB instance
-- Pipenv (recommended)
+- Pipenv
+- MetaMask wallet (VERY IMPORTANT, preferred - Browser extension)
 
 ### Installation
 ```bash
@@ -72,8 +77,14 @@ streamlit run frontend/frontend.py
 │   ├── app.py               # Flask main application
 │   ├── db_connect.py        # MongoDB connection
 │   └── jwt_generate.py      # JWT token utilities
+|   |── ipfs_service.py      # IPFS Interaction class
+|   |── wallet_connect.py    # Wallet connection and verification
 ├── frontend/
 │   ├── frontend.py               # Streamlit application
+|── contracts/
+|   |──encryption_key.sol
+|   |──image_share.sol
+|   |──registry_contract.sol
 ├── .env.example             # Environment template
 └── README.md
 ```
