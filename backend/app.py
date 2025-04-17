@@ -17,7 +17,6 @@ import datetime
 from blockchain_manager import BlockchainManager
 
  # type: ignore
-from bson import ObjectId # type: ignore
 
 
 load_dotenv()
