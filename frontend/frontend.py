@@ -406,9 +406,10 @@ def show_my_assets():
         description = st.text_area("Description", value=st.session_state.form_data['description'])
         price = st.number_input("Price (ETH)*", value=float(st.session_state.form_data['price']), min_value=0.0, step=0.01)
         file = st.file_uploader("Asset File*", type=["png", "jpg", "jpeg", "gif", "mp4", "mov", "pdf", "glb"])
+        list_to_marketplace = st.checkbox("List it to marketplace", value=False)
 
-        submitted = st.form_submit_button("Upload and List Asset")
-        
+        submitted = st.form_submit_button("Upload Asset")
+
         if submitted:
             if not all([asset_name, file]):
                 st.error("Please fill all required fields (*)")
@@ -418,14 +419,14 @@ def show_my_assets():
                     file_bytes = file.getvalue()
                     
                     with st.spinner("Uploading to IPFS..."):
-                        # Prepare the request properly
                         files = {
                             'file': (file.name, file_bytes, file.type)
                         }
                         data = {
                             'name': asset_name,
                             'description': description,
-                            'price': str(price)
+                            'price': str(price),
+                            'list_to_marketplace': str(list_to_marketplace)
                         }
                         headers = {
                             'Authorization': f'Bearer {st.session_state.token}'
@@ -529,10 +530,6 @@ def show_my_assets():
                     st.error(f"Error: {str(e)}")
     
     st.subheader("Your Assets")
-    display_user_assets()
-
-def display_user_assets():
-    """Fetch and display user's assets from backend"""
     try:
         response = session.get(
             f"{API_URL}/user_assets",
@@ -548,21 +545,40 @@ def display_user_assets():
                 
             for asset in assets:
                 with st.container():
-                    col1, col2 = st.columns([1, 3])
+                    col1, col2, col3 = st.columns([2, 2, 1])
                     
                     with col1:
-                        st.write(f"📄 {asset['file_name']}")
-                    
-                    with col2:
                         st.subheader(asset["name"])
                         st.write(asset["description"])
-                        st.write(f"🆔 IPFS CID: `{asset['ipfs_hash']}`")
                         st.write(f"💰 Price: {asset['price']} ETH")
                         st.write(f"📅 Uploaded: {asset['created_at']}")
+                    
+                    with col2:
+                        ipfs_url = f"https://gateway.pinata.cloud/ipfs/{asset['ipfs_hash']}"
+                        st.markdown(f"🔗 [View on IPFS]({ipfs_url})")
+                        st.write(f"📄 File: {asset['file_name']}")
                         
-                        if st.button("View Details", key=f"view_{asset['ipfs_hash']}"):
-                            st.session_state.current_asset = asset
-                            st.rerun()
+                    with col3:
+                        if not asset.get('available', False):
+                            list_button_key = f"list_{asset['ipfs_hash']}"
+                            if st.button("List to Marketplace", key=list_button_key, type="primary"):
+                                with st.spinner("Listing asset to marketplace..."):
+                                    headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                                    list_response = requests.post(
+                                        f"{API_URL}/sale",
+                                        json={"ipfs_hash": asset['ipfs_hash']},
+                                        headers=headers
+                                    )
+                                    
+                                    if list_response.status_code == 200:
+                                        st.success("Asset successfully listed to marketplace!")
+                                        time.sleep(1)  # Show success message
+                                        st.rerun()
+                                    else:
+                                        error_msg = list_response.json().get('error', 'Failed to list asset')
+                                        st.error(f"Error: {error_msg}")
+                        else:
+                            st.success("🏪 Listed in Marketplace")
                     
                     st.markdown("---")
         else:
