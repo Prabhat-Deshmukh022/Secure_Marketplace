@@ -14,6 +14,7 @@ from dateutil.relativedelta import relativedelta
 import os
 from functools import wraps
 import datetime
+from bson import ObjectId # type: ignore
 
 
 load_dotenv()
@@ -339,12 +340,13 @@ def put_for_sale(user):
         return jsonify({"error": "An unexpected error occurred"}), 500
     
 @app.route('/display-all-assets',methods=['GET'])
-def display_assets():
+@check_token
+def display_assets(user):
     try:
         assets = list(
             asset_collection.find(
                 {"available":True},
-                {"_id":0,"author":1,"description":1,"ipfs_hash":1}
+                {"_id":0,"author":1,"description":1,"ipfs_hash":1,"price":1, "name":1}
             )
         )
 
@@ -357,6 +359,57 @@ def display_assets():
     except Exception as e:
         return jsonify({"error":str(e)}), 500
 
+@app.route('/update-asset/<asset_id>', methods=['PUT'])
+@check_token
+def update_assets(user, asset_id):
 
+    print("IN UPDATE_ASSETS")
+
+    try:
+        # Convert asset_id to ObjectId
+        try:
+            asset_id = ObjectId(asset_id)
+        except Exception:
+            return jsonify({"message": "Invalid asset ID format"}), 400
+
+        # Find the asset by _id
+        asset = asset_collection.find_one({"_id": asset_id})
+
+        if not asset:
+            return jsonify({"message": "Asset not found"}), 404
+
+        # Get the request payload
+        data = request.json
+        price = data.get("price")
+        name = data.get("name")
+        description = data.get("description")
+
+        # Prepare the update fields
+        update_fields = {}
+        if price is not None:
+            update_fields["price"] = price
+        if name is not None:
+            update_fields["name"] = name
+        if description is not None:
+            update_fields["description"] = description
+
+        if not update_fields:
+            return jsonify({"message": "No fields to update"}), 400
+
+        # Update the asset
+        result = asset_collection.update_one(
+            {"_id": asset_id},
+            {"$set": update_fields}
+        )
+
+        if result.modified_count == 0:
+            return jsonify({"message": "No changes made to the asset"}), 200
+
+        return jsonify({"message": "Asset updated successfully"}), 200
+
+    except Exception as e:
+        print(f"Error in /update-asset route: {str(e)}")  # Debug log
+        return jsonify({"error": "An unexpected error occurred"}), 500
+    
 if __name__=="__main__":
     app.run(debug=True)

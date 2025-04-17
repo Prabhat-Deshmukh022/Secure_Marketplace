@@ -38,7 +38,11 @@ def main():
     # Check for existing token on page load
     if not st.session_state.authenticated and not st.session_state.token:
         check_existing_session()
-    
+    # if st.session_state.get("update_asset_id"):
+    #     update_asset_details(st.session_state.update_asset_id)
+    # else:
+    #     display_user_assets()
+
     # Route to appropriate page
     if st.session_state.show_signup:
         show_signup()
@@ -768,8 +772,10 @@ def show_my_assets():
     display_user_assets()
 
 def display_user_assets():
-    """Fetch and display user's assets from backend"""
+    """Fetch and display user's assets from backend with Update and Put for Sale buttons."""
+    st.title("Your Assets")
     try:
+        # Fetch user assets
         response = session.get(
             f"{API_URL}/user_assets",
             headers={"Authorization": f"Bearer {st.session_state.token}"}
@@ -779,7 +785,7 @@ def display_user_assets():
             assets = response.json().get("assets", [])
             
             if not assets:
-                st.info("You haven't uploaded any assets yet")
+                st.info("You haven't uploaded any assets yet.")
                 return
                 
             for asset in assets:
@@ -796,34 +802,69 @@ def display_user_assets():
                         st.write(f"💰 Price: {asset['price']} ETH")
                         st.write(f"📅 Uploaded: {asset['created_at']}")
                         
-                        if st.button("View Details", key=f"view_{asset['ipfs_hash']}"):
-                            st.session_state.current_asset = asset
-                            st.rerun()
+                        # Add a Put for Sale button
+                        if st.button("Put for Sale", key=f"sale_{asset['ipfs_hash']}"):
+                            try:
+                                sale_response = session.post(
+                                    f"{API_URL}/sale",
+                                    json={"ipfs_hash": asset["ipfs_hash"]},
+                                    headers={"Authorization": f"Bearer {st.session_state.token}"}
+                                )
+                                
+                                if sale_response.status_code == 200:
+                                    st.success(f"Asset '{asset['name']}' is now available for sale!")
+                                else:
+                                    error_message = sale_response.json().get("message", "Failed to put asset for sale.")
+                                    st.error(f"Error: {error_message}")
+                            except Exception as e:
+                                st.error(f"Error putting asset for sale: {str(e)}")
                     
                     st.markdown("---")
         else:
-            st.error("Failed to fetch assets")
+            st.error("Failed to fetch assets.")
     except Exception as e:
-        st.error(f"Error loading assets: {str(e)}")
+        st.error(f"Error loading assets: {str(e)}")    
 
 def show_marketplace():
     st.title("Marketplace")
     st.write("Browse and buy digital assets from other users.")
-    
-    # Mock marketplace data
-    mock_marketplace = [
-        {"name": "Exclusive NFT Art", "owner": "0xA1B2C3D4", "ipfs_id": "QmNFT999...", "price": "0.5 ETH"},
-        {"name": "Virtual Land Parcel", "owner": "0xF9E8D7C6", "ipfs_id": "QmLand789...", "price": "2.0 ETH"},
-    ]
-    
-    for item in mock_marketplace:
-        st.write(f"**{item['name']}**")
-        st.write(f"👤 Owner: {item['owner']}")
-        st.write(f"🔗 IPFS ID: {item['ipfs_id']}")
-        st.write(f"💰 Price: {item['price']}")
-        if st.button(f"Buy {item['name']}", key=f"buy_{item['ipfs_id']}"):
-            st.success(f"Purchased {item['name']} successfully! Transaction will be processed.")
-        st.markdown("---")
+
+    try:
+        # Fetch assets from the backend
+        response = session.get(
+            f"{API_URL}/display-all-assets",
+            headers={"Authorization": f"Bearer {st.session_state.token}"}
+        )
+
+        # Check if the request was successful
+        if response.status_code != 200:
+            error_message = response.json().get("error", "Failed to fetch assets")
+            st.error(f"Error: {error_message}")
+            return
+
+        # Parse the assets from the response
+        assets = response.json().get("assets", [])
+
+        # Check if there are any assets available
+        if not assets:
+            st.info("No assets are currently available for sale.")
+            return
+
+        # Display the assets
+        for item in assets:
+            with st.container():
+                st.write(f"**{item.get('name', 'Unnamed Asset')}**")
+                st.write(f"👤 Owner: {item.get('author', 'Unknown')}")
+                st.write(f"🔗 IPFS ID: {item.get('ipfs_hash', 'N/A')}")
+                st.write(f"💰 Price: {item.get('price', 'N/A')} ETH")
+                if st.button(f"Buy {item.get('name', 'Unnamed Asset')}", key=f"buy_{item.get('ipfs_hash', '')}"):
+                    st.success(f"Purchased {item.get('name', 'Unnamed Asset')} successfully! Transaction will be processed.")
+                st.markdown("---")
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Network error: {str(e)}")
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {str(e)}")
 
 def show_cookie_debug():
     st.write("### Cookie Debug")
@@ -837,5 +878,86 @@ def show_cookie_debug():
     </script>
     """)
 
+# def update_asset_details(asset_id):
+#     st.title("Update Asset Details")
+#     st.write(f"Updating asset with ID: {asset_id}")  # Debug log
+
+#     # Fetch the current asset details from the backend
+#     try:
+#         response = session.get(
+#             f"{API_URL}/user_assets",
+#             headers={"Authorization": f"Bearer {st.session_state.token}"}
+#         )
+
+#         if response.status_code != 200:
+#             st.error("Failed to fetch your assets. Please try again.")
+#             return
+
+#         # Find the asset by asset_id
+#         assets = response.json().get("assets", [])
+#         asset = next((a for a in assets if a["ipfs_hash"] == asset_id), None)
+
+#         if not asset:
+#             st.error("Asset not found.")
+#             return
+
+#     except Exception as e:
+#         st.error(f"Error fetching asset details: {str(e)}")
+#         return
+
+#     # Display the current asset details
+#     st.subheader("Current Asset Details")
+#     st.write(f"**Name:** {asset.get('name', 'Unnamed Asset')}")
+#     st.write(f"**Description:** {asset.get('description', 'No description available')}")
+#     st.write(f"**Price:** {asset.get('price', 'N/A')} ETH")
+#     st.write(f"**IPFS Hash:** {asset.get('ipfs_hash', 'N/A')}")
+
+#     # Form to update asset details
+#     with st.form("update_asset_form"):
+#         new_name = st.text_input("New Name", value=asset.get("name", ""))
+#         new_description = st.text_area("New Description", value=asset.get("description", ""))
+#         new_price = st.number_input("New Price (ETH)", value=float(asset.get("price", 0.0)), min_value=0.0, step=0.01)
+
+#         submitted = st.form_submit_button("Update Asset")
+
+#         if submitted:
+#             payload = {}
+#             if new_name:
+#                 payload["name"] = new_name
+#             if new_description:
+#                 payload["description"] = new_description
+#             if new_price is not None:
+#                 payload["price"] = new_price
+
+#             if not payload:
+#                 st.warning("No changes made to the asset.")
+#                 return
+
+#             try:
+#                 update_response = session.put(
+#                     f"{API_URL}/update-asset/{asset_id}",
+#                     json=payload,
+#                     headers={"Authorization": f"Bearer {st.session_state.token}"}
+#                 )
+
+#                 if update_response.status_code == 200:
+#                     st.success("Asset updated successfully!")
+#                     st.session_state.update_asset_id = None
+#                     st.experimental_rerun()
+#                 elif update_response.status_code == 404:
+#                     st.error("Asset not found.")
+#                 elif update_response.status_code == 400:
+#                     st.error(update_response.json().get("message", "Invalid request."))
+#                 else:
+#                     st.error("Failed to update the asset. Please try again.")
+
+#             except Exception as e:
+#                 st.error(f"Error updating asset: {str(e)}")
+
+#     # Cancel button
+#     if st.button("Cancel"):
+#         st.session_state.update_asset_id = None
+#         st.experimental_rerun()
+                
 if __name__ == "__main__":
     main()
