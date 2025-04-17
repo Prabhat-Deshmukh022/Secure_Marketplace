@@ -31,6 +31,7 @@ from flask_cors import CORS # type: ignore
 db=connect()
 user_collection=db["users"]
 asset_collection=db["assests"]
+marketplace_collection=db["marketplace"]
 
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
@@ -201,12 +202,27 @@ def verify_wallet(user):
 
 ipfs_service = IPFSService()
 
+def validate_content(metadata):
+    # Check for inappropriate content
+    inappropriate_words = ['nigger', 'slur', 'hate', 'racist']
+    text_to_check = (str(metadata.get('name', '')).lower() + ' ' + 
+                     str(metadata.get('description', '')).lower())
+    
+    for word in inappropriate_words:
+        if word in text_to_check:
+            return False, "Content contains inappropriate language"
+    
+    # Validate other required fields
+    required_fields = ['name', 'description', 'price']
+    for field in required_fields:
+        if not metadata.get(field):
+            return False, f"Missing required field: {field}"
+            
+    return True, "Content is valid"
+
 @app.route('/upload_asset', methods=['POST'])
 @check_token
 def upload_asset(user):
-
-    # print( f" File: {request.files['file']}, form_data: {request.form.to_dict()}" )
-
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -216,7 +232,12 @@ def upload_asset(user):
         
         if file.filename == '':
             return jsonify({"error": "No selected file"}), 400
-            
+        
+        # Validate content before processing
+        is_valid, message = validate_content(asset_data)
+        if not is_valid:
+            return jsonify({"error": message}), 400
+
         # Upload file to IPFS
         ipfs_hash = ipfs_service.upload_to_ipfs(
             file.stream,
@@ -226,12 +247,11 @@ def upload_asset(user):
         if not ipfs_hash:
             return jsonify({"error": "Failed to upload to IPFS"}), 500
 
-        created_at=datetime.datetime.utcnow()
-        expiry=created_at+relativedelta(months=2)
+        created_at = datetime.datetime.utcnow()
+        expiry = created_at + relativedelta(months=2)
+        price = asset_data.get("price")
 
-        price=asset_data.get("price")
-
-        # Create metadata
+        # Create metadata with sanitized content
         metadata = {
             "name": asset_data.get("name", file.filename),
             "description": asset_data.get("description", ""),
@@ -242,25 +262,28 @@ def upload_asset(user):
             "file_name": file.filename,
             "content_type": file.content_type,
             "ipfs_hash": ipfs_hash,
-            "price":price,
-            "available":False        
+            "price": price,
+            "available": True  # Set available to true by default
         }
         
         # Pin metadata to IPFS
         metadata_hash = ipfs_service.pin_json(metadata)
 
+        # Add to asset collection
         asset_collection.insert_one(metadata)
 
+        # Update user's assets
         user_collection.update_one(
-            {
-                "_id":user["_id"]
-            },
-            {
-                "$push":{
-                    "assets":ipfs_hash
-                }
-            }
+            {"_id": user["_id"]},
+            {"$push": {"assets": ipfs_hash}}
         )
+
+        # Initialize in marketplace collection (with available as true)
+        marketplace_collection.insert_one({
+            **metadata,
+            "listed_at": datetime.datetime.utcnow().isoformat(),
+            "owner_id": user["_id"]
+        })
         
         return jsonify({
             "success": True,
@@ -325,42 +348,99 @@ def put_for_sale(user):
         if expiry_date <= datetime.datetime.utcnow():
             return jsonify({"message": "Asset has expired"}), 400
 
-        # Update the `available` field to True
+        # Update the `available` field to True in both collections
+        current_time = datetime.datetime.utcnow()
+        
+        # Update asset collection
         asset_collection.update_one(
-            {"ipfs_hash": ipfs_hash},  # Filter to find the asset
-            {"$set": {"available": True}}  # Update the `available` field to True
+            {"ipfs_hash": ipfs_hash},
+            {"$set": {"available": True}}
+        )
+
+        # Update marketplace collection
+        marketplace_collection.update_one(
+            {"ipfs_hash": ipfs_hash},
+            {
+                "$set": {
+                    "available": True,
+                    "listed_at": current_time.isoformat()
+                }
+            }
         )
 
         return jsonify({
             "message": "Asset is up for sale!",
             "asset_id": ipfs_hash,
             "description": asset.get("description", "No description available"),
-            "author": asset.get("author", "Unknown author"),
-            # "wallet_id": asset.get("wallet_address", "N/A")  # Uncomment if wallet_address is used
+            "author": asset.get("author", "Unknown author")
         }), 200
 
     except Exception as e:
-        print(f"Error in /sale route: {str(e)}")  # Debug log
+        print(f"Error in /sale route: {str(e)}")
         return jsonify({"error": "An unexpected error occurred"}), 500
     
 @app.route('/display-all-assets',methods=['GET'])
-def display_assets():
+@check_token
+def display_assets(user):
     try:
+        # Get all available assets from marketplace collection
         assets = list(
-            asset_collection.find(
-                {"available":True},
-                {"_id":0,"author":1,"description":1,"ipfs_hash":1}
+            marketplace_collection.find(
+                {
+                    "available": True,
+                    "author": {"$ne": user["username"]},  # Exclude current user's assets
+                    "listed_at": {"$ne": None}  # Only show items that have been listed
+                },
+                {
+                    "_id": 0,
+                    "author": 1,
+                    "description": 1,
+                    "ipfs_hash": 1,
+                    "name": 1,
+                    "price": 1,
+                    "file_name": 1,
+                    "listed_at": 1
+                }
             )
         )
 
         if not assets:
-            return jsonify({"message":"No assets for sale"}), 404
+            return jsonify({"message": "No assets for sale from other users"}), 404
 
         return jsonify({
-            "assets":assets
+            "assets": assets
         }), 200
     except Exception as e:
-        return jsonify({"error":str(e)}), 500
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/update-availability/<ipfs_hash>', methods=['PUT'])
+@check_token
+def update_availability(user, ipfs_hash):
+    try:
+        # Update in marketplace collection
+        result = marketplace_collection.update_one(
+            {"ipfs_hash": ipfs_hash},
+            {
+                "$set": {
+                    "available": True,
+                    "listed_at": datetime.datetime.utcnow().isoformat()
+                }
+            }
+        )
+
+        # Update in asset collection
+        asset_collection.update_one(
+            {"ipfs_hash": ipfs_hash},
+            {"$set": {"available": True}}
+        )
+
+        if result.modified_count > 0:
+            return jsonify({"message": "Asset availability updated successfully"}), 200
+        else:
+            return jsonify({"message": "Asset not found"}), 404
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__=="__main__":
