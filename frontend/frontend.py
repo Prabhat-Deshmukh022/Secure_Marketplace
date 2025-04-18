@@ -8,6 +8,11 @@ from streamlit_javascript import st_javascript
 from web3 import Web3
 import os
 from dotenv import load_dotenv
+import nacl.utils
+import nacl.secret  # Added missing import
+from nacl.public import PrivateKey, PublicKey, Box
+from eth_keys import keys
+from eth_utils import decode_hex
 
 # Load environment variables
 load_dotenv()
@@ -23,8 +28,8 @@ with open(r'contracts\KeyManagement.json') as f:
     key_management_abi = json.load(f)['abi']
 
 # Initialize contracts
-image_sharing_address = os.getenv('IMAGE_SHARING_CONTRACT')
-key_management_address = os.getenv('KEY_MANAGEMENT_CONTRACT')
+image_sharing_address = Web3.to_checksum_address(os.getenv('IMAGE_SHARING_CONTRACT'))
+key_management_address = Web3.to_checksum_address(os.getenv('KEY_MANAGEMENT_CONTRACT'))
 image_sharing_contract = w3.eth.contract(address=image_sharing_address, abi=image_sharing_abi)
 key_management_contract = w3.eth.contract(address=key_management_address, abi=key_management_abi)
 
@@ -37,6 +42,41 @@ session.headers.update({"Content-Type": "application/json"})
 
 # Backend API URL
 API_URL = "http://127.0.0.1:5000"
+
+def generate_keypair():
+    """Generate a NaCl keypair for encryption"""
+    private_key = PrivateKey.generate()
+    public_key = private_key.public_key
+    return private_key, public_key
+
+def encrypt_file(file_bytes, public_key):
+    """Encrypt file data with a random secret key, then encrypt that key with recipient's public key"""
+    # Generate random secret key for file encryption
+    secret_key = nacl.utils.random(32)
+    
+    # Encrypt file with secret key
+    box = nacl.secret.SecretBox(secret_key)
+    encrypted_file = box.encrypt(file_bytes)
+    
+    # Encrypt secret key with recipient's public key
+    recipient_key = PublicKey(public_key)
+    sender_private = PrivateKey.generate()
+    sender_box = Box(sender_private, recipient_key)
+    encrypted_key = sender_box.encrypt(secret_key)
+    
+    return encrypted_file, encrypted_key
+
+def decrypt_file(encrypted_file, encrypted_key, private_key):
+    """Decrypt file using private key"""
+    # First decrypt the secret key
+    private_key_obj = PrivateKey(private_key)
+    box = Box(private_key_obj, PublicKey(encrypted_key[:32]))
+    secret_key = box.decrypt(encrypted_key[32:])
+    
+    # Then decrypt the file
+    secret_box = nacl.secret.SecretBox(secret_key)
+    decrypted_file = secret_box.decrypt(encrypted_file)
+    return decrypted_file
 
 def main():
     st.set_page_config(page_title="Secure Digital Asset Marketplace", layout="wide")
@@ -60,10 +100,6 @@ def main():
     # Check for existing token on page load
     if not st.session_state.authenticated and not st.session_state.token:
         check_existing_session()
-    # if st.session_state.get("update_asset_id"):
-    #     update_asset_details(st.session_state.update_asset_id)
-    # else:
-    #     display_user_assets()
 
     # Route to appropriate page
     if st.session_state.show_signup:
@@ -71,7 +107,6 @@ def main():
     elif not st.session_state.authenticated:
         show_login()
     else:
-        # register_wallet_listener()
         show_home()
     
 def check_existing_session():
@@ -132,7 +167,6 @@ def show_login():
                         # Correct way to set query param
                         st.query_params["token"] = token
                         st.session_state.authenticated = True
-                        # st.session_state.current_user = token
                         st.rerun()
                     else:
                         st.error("Login failed - no token received")
@@ -196,7 +230,7 @@ def clear_storage():
 
 def show_home():
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["My Assets", "Marketplace"])
+    page = st.sidebar.radio("Go to", ["My Assets", "Marketplace", "Notifications"])
 
     # Display user info and logout button in sidebar
     st.sidebar.markdown("---")
@@ -347,6 +381,47 @@ def show_home():
             </script>
             """, height=0)
 
+    # After wallet connection section
+    st.components.v1.html("""
+    <script>
+    // Helper function to initialize Web3 library and setup communication
+    window.setupWeb3 = async function() {
+        if (window.ethereum) {
+            window.web3Provider = window.ethereum;
+        } else if (window.parent.ethereum) {
+            window.web3Provider = window.parent.ethereum;
+        }
+        
+        if (!window.web3Provider) {
+            throw new Error('No Web3 provider found. Please install MetaMask.');
+        }
+
+        window.web3 = new Web3(window.web3Provider);
+        
+        // Setup cross-frame communication
+        window.addEventListener('message', function(event) {
+            if (event.data.type === 'WEB3_REQUEST') {
+                window.parent.postMessage({ type: 'WEB3_RESPONSE', provider: window.web3Provider }, '*');
+            }
+        });
+
+        return window.web3Provider;
+    };
+
+    // Initialize on load
+    window.addEventListener('load', function() {
+        if (!window.web3) {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
+            script.onload = () => {
+                setupWeb3().catch(console.error);
+            };
+            document.head.appendChild(script);
+        }
+    });
+    </script>
+    """, height=0)
+
     # Display connection status
     if st.session_state.wallet_connected:
         st.success(f"🔗 Connected: {st.session_state.wallet_address[:6]}...{st.session_state.wallet_address[-4:]}")
@@ -355,6 +430,8 @@ def show_home():
         show_my_assets()
     elif page == "Marketplace":
         show_marketplace()
+    elif page == "Notifications":
+        show_notifications()
 
 def logout_user():
     # clear_storage()
@@ -447,6 +524,42 @@ def show_my_assets():
                             ipfs_data = response.json()
                             file_cid = ipfs_data['file_cid']
                             metadata_cid = ipfs_data.get('metadata_cid', '')
+
+                            # After IPFS upload success, encrypt the file
+                            if ipfs_data:
+                                # Generate a random key for this asset
+                                asset_key = nacl.utils.random(32)
+                                
+                                # Encrypt the file
+                                encrypted_file = nacl.secret.SecretBox(asset_key).encrypt(file_bytes)
+                                
+                                # Upload encrypted file to IPFS
+                                encrypted_ipfs_response = requests.post(
+                                    f"{API_URL}/upload_asset",
+                                    files={'file': ('encrypted_' + file.name, encrypted_file)},
+                                    headers=headers
+                                )
+                                
+                                if encrypted_ipfs_response.status_code == 200:
+                                    encrypted_cid = encrypted_ipfs_response.json()['file_cid']
+                                    
+                                    # Store the asset key encrypted with owner's public key
+                                    owner_public_key = PublicKey(st.session_state.public_key)
+                                    box = Box(PrivateKey.generate(), owner_public_key)
+                                    encrypted_key = box.encrypt(asset_key)
+                                    
+                                    # Upload encrypted key to IPFS
+                                    key_response = requests.post(
+                                        f"{API_URL}/upload_asset",
+                                        files={'file': ('key.bin', encrypted_key)},
+                                        headers=headers
+                                    )
+                                    
+                                    if key_response.status_code == 200:
+                                        key_cid = key_response.json()['file_cid']
+                                        
+                                        # Now proceed with blockchain listing using encrypted CIDs
+                                        # ...existing blockchain listing code...
 
                             # Convert price to Wei
                             price_wei = w3.to_wei(price, 'ether')
@@ -623,98 +736,399 @@ def show_marketplace():
                     col1, col2 = st.columns([2, 1])
                     
                     with col1:
-                        st.subheader(asset.get("name", "Untitled Asset"))
-                        st.write(asset.get("description", "No description available"))
-                        st.write(f"👤 Author: {asset.get('author', 'Unknown')}")
+                        st.subheader(asset["name"])
+                        st.write(asset["description"])
+                        st.write(f"👤 Author: {asset['author']}")
                         
-                        # Add IPFS link to view the file
-                        ipfs_hash = asset.get("ipfs_hash")
+                        ipfs_hash = asset["ipfs_hash"]
                         if ipfs_hash:
-                            ipfs_url = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
-                            st.markdown(f"🔗 [View on IPFS]({ipfs_url})")
+                            preview_url = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+                            st.markdown(f"🔗 [Preview Asset]({preview_url})")
                             
                     with col2:
-                        price = float(asset.get("price", 0))
+                        price = float(asset["price"])
+                        price_wei = w3.to_wei(price, 'ether')
                         st.write(f"💰 Price: {price} ETH")
                         
                         if st.button(f"Purchase", key=f"buy_{ipfs_hash}"):
-                            price_wei = w3.to_wei(price, 'ether')
-                            
-                            # Check balance
-                            balance = w3.eth.get_balance(st.session_state.wallet_address)
-                            if balance < price_wei:
-                                st.error("Insufficient balance!")
-                                return
-
-                            st.info("Please approve the transaction in MetaMask...")
-                            
-                            # Inject JavaScript for MetaMask transaction
-                            purchase_js = f"""
-                            <script>
-                            async function purchaseAsset() {{
-                                try {{
-                                    // Add web3 library
-                                    const script = document.createElement('script');
-                                    script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
-                                    script.onload = async () => {{
-                                        window.web3 = new Web3(window.ethereum);
-                                        
-                                        // Create the function selector for purchaseImage(uint256)
-                                        const functionSelector = '0x' + web3.utils.keccak256('purchaseImage(uint256)').slice(0, 8);
-                                        
-                                        // Encode parameter (image ID = 1)
-                                        const encodedParams = web3.eth.abi.encodeParameters(['uint256'], [1]);
-                                        
-                                        // Combine function selector and encoded parameters
-                                        const data = functionSelector + encodedParams.slice(2);
-                                        
-                                        const tx = await ethereum.request({{
-                                            method: 'eth_sendTransaction',
-                                            params: [{{
-                                                from: '{st.session_state.wallet_address}',
-                                                to: '{image_sharing_address}',
-                                                value: '0x{price_wei:x}',
-                                                data: data,
-                                                gas: '0x4C4B40'
-                                            }}]
-                                        }});
-                                        
-                                        window.parent.postMessage({{
-                                            type: 'PURCHASE_COMPLETE',
-                                            txHash: tx
-                                        }}, '*');
-                                    }};
-                                    document.head.appendChild(script);
+                            if st.session_state.wallet_connected:
+                                try:
+                                    # Generate keypair for the transaction
+                                    private_key = PrivateKey.generate()
+                                    public_key = private_key.public_key
                                     
-                                }} catch (error) {{
-                                    console.error('Error:', error);
-                                    window.parent.postMessage({{
-                                        type: 'PURCHASE_ERROR',
-                                        error: error.message
-                                    }}, '*');
-                                    return null;
-                                }}
-                            }}
-                            purchaseAsset();
-                            </script>
-                            """
-                            st.components.v1.html(purchase_js, height=0)
-                            
-                            with st.spinner("Processing purchase..."):
-                                st.success("Purchase successful! You can now access this asset.")
-                                st.markdown(f"🔗 [View your purchased asset]({ipfs_url})")
+                                    # Store private key securely in session state
+                                    st.session_state['temp_private_key'] = private_key.encode()
+                                    st.session_state['temp_public_key'] = public_key.encode()
+                                    
+                                    # Create container for transaction status
+                                    with st.status("Processing purchase...", expanded=True) as status:
+                                        st.write("⌛ Initializing web3 connection...")
+                                        
+                                        # Inject Web3 code with proper key handling
+                                        web3_js = f"""
+                                        <script>
+                                        async function handlePurchase() {{
+                                            console.log("Starting purchase process...");
+                                            if (typeof window.ethereum === 'undefined' && typeof window.parent.ethereum === 'undefined') {{
+                                                throw new Error('No Web3 provider found. Please install MetaMask.');
+                                            }}
+                                            
+                                            // Get the correct ethereum provider
+                                            const ethereum = window.ethereum || window.parent.ethereum;
+                                            const web3 = new Web3(ethereum);
+                                            
+                                            try {{
+                                                // Request account access
+                                                const accounts = await ethereum.request({{ method: 'eth_requestAccounts' }});
+                                                const account = accounts[0];
+                                                console.log("Connected account:", account);
+                                                
+                                                // Convert public key to proper format
+                                                const publicKeyBytes = '{st.session_state.temp_public_key.hex()}'.replace('0x', '');
+                                                console.log("Public key to register:", publicKeyBytes);
+                                                
+                                                // First register public key
+                                                window.parent.postMessage({{ type: 'STATUS_UPDATE', message: 'Registering your public key...' }}, '*');
+                                                
+                                                const keyRegisterTx = {{
+                                                    from: account,
+                                                    to: '{key_management_address}',
+                                                    gas: '0x186A0',
+                                                    data: web3.eth.abi.encodeFunctionCall({{
+                                                        name: 'registerPublicKey',
+                                                        type: 'function',
+                                                        inputs: [{{
+                                                            type: 'bytes',
+                                                            name: '_publicKey'
+                                                        }}]
+                                                    }}, ['0x' + publicKeyBytes])
+                                                }};
 
+                                                console.log("Sending key registration tx:", keyRegisterTx);
+                                                const keyRegisterHash = await ethereum.request({{
+                                                    method: 'eth_sendTransaction',
+                                                    params: [keyRegisterTx]
+                                                }});
+
+                                                // Wait for key registration confirmation
+                                                window.parent.postMessage({{ 
+                                                    type: 'STATUS_UPDATE', 
+                                                    message: 'Waiting for key registration confirmation...' 
+                                                }}, '*');
+                                                
+                                                let receipt;
+                                                while (!receipt) {{
+                                                    receipt = await web3.eth.getTransactionReceipt(keyRegisterHash);
+                                                    if (!receipt) {{
+                                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                                    }}
+                                                }}
+
+                                                if (!receipt.status) {{
+                                                    throw new Error('Key registration failed');
+                                                }}
+                                                
+                                                // Proceed with purchase
+                                                window.parent.postMessage({{ 
+                                                    type: 'STATUS_UPDATE', 
+                                                    message: 'Processing purchase transaction...' 
+                                                }}, '*');
+
+                                                const purchaseTx = {{
+                                                    from: account,
+                                                    to: '{image_sharing_address}',
+                                                    value: web3.utils.toHex('{price_wei}'),
+                                                    gas: '0x186A0',
+                                                    data: web3.eth.abi.encodeFunctionCall({{
+                                                        name: 'purchaseImage',
+                                                        type: 'function',
+                                                        inputs: [{{
+                                                            type: 'uint256',
+                                                            name: '_imageId'
+                                                        }}]
+                                                    }}, ['{asset.get("image_id", "1")}'])
+                                                }};
+
+                                                console.log("Sending purchase tx:", purchaseTx);
+                                                const purchaseHash = await ethereum.request({{
+                                                    method: 'eth_sendTransaction',
+                                                    params: [purchaseTx]
+                                                }});
+
+                                                // Wait for purchase confirmation
+                                                window.parent.postMessage({{ 
+                                                    type: 'STATUS_UPDATE', 
+                                                    message: 'Waiting for purchase confirmation...' 
+                                                }}, '*');
+                                                
+                                                receipt = null;
+                                                while (!receipt) {{
+                                                    receipt = await web3.eth.getTransactionReceipt(purchaseHash);
+                                                    if (!receipt) {{
+                                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                                    }}
+                                                }}
+
+                                                if (!receipt.status) {{
+                                                    throw new Error('Purchase transaction failed');
+                                                }}
+
+                                                // Notify of completion
+                                                window.parent.postMessage({{
+                                                    type: 'PURCHASE_COMPLETE',
+                                                    txHash: purchaseHash,
+                                                    imageId: '{ipfs_hash}'
+                                                }}, '*');
+
+                                            }} catch (error) {{
+                                                console.error('Transaction error:', error);
+                                                window.parent.postMessage({{
+                                                    type: 'TRANSACTION_ERROR',
+                                                    error: error.message
+                                                }}, '*');
+                                            }}
+                                        }}
+
+                                        // Load Web3 and start purchase
+                                        if (window.web3) {{
+                                            handlePurchase();
+                                        }} else {{
+                                            const script = document.createElement('script');
+                                            script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
+                                            script.onload = handlePurchase;
+                                            document.head.appendChild(script);
+                                        }}
+                                        </script>
+                                        """
+                                        
+                                        st.components.v1.html(web3_js, height=0)
+                                        
+                                        # Add status handler
+                                        status_js = """
+                                        <script>
+                                        window.addEventListener('message', async function(event) {
+                                            if (event.data.type === 'STATUS_UPDATE') {
+                                                window.streamlitMessageHandler.setMessage(event.data.message);
+                                            }
+                                            else if (event.data.type === 'PURCHASE_COMPLETE') {
+                                                try {
+                                                    const response = await fetch('%s/purchase-complete', {
+                                                        method: 'POST',
+                                                        headers: {
+                                                            'Content-Type': 'application/json',
+                                                            'Authorization': 'Bearer %s'
+                                                        },
+                                                        body: JSON.stringify({
+                                                            assetId: event.data.imageId,
+                                                            transactionHash: event.data.txHash
+                                                        })
+                                                    });
+
+                                                    if (!response.ok) {
+                                                        throw new Error('Failed to complete purchase on backend');
+                                                    }
+
+                                                    window.streamlitMessageHandler.setMessage('✅ Purchase completed! The seller will process your key.');
+                                                    setTimeout(() => window.location.reload(), 3000);
+                                                } catch (error) {
+                                                    window.streamlitMessageHandler.setError('Backend error: ' + error.message);
+                                                }
+                                            }
+                                            else if (event.data.type === 'TRANSACTION_ERROR') {
+                                                window.streamlitMessageHandler.setError('❌ ' + event.data.error);
+                                            }
+                                        });
+                                        </script>
+                                        """ % (API_URL, st.session_state.token)
+                                        
+                                        st.components.v1.html(status_js, height=0)
+                                        
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+                                    print(f"Error details: {str(e)}")
+                            else:
+                                st.error("Please connect your wallet first")
                     st.markdown("---")
+                    
         else:
             st.error("Failed to fetch marketplace listings")
             
     except Exception as e:
         st.error(f"Error: {str(e)}")
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"Network error: {str(e)}")
+def show_notifications():
+    """Display and handle seller notifications for asset purchases"""
+    st.subheader("📬 Notifications")
+    
+    if not st.session_state.wallet_connected:
+        st.warning("Please connect your wallet to view notifications.")
+        return
+        
+    try:
+        # Fetch user notifications
+        response = requests.get(
+            f"{API_URL}/notifications",
+            headers={"Authorization": f"Bearer {st.session_state.token}"}
+        )
+        
+        if response.status_code == 200:
+            notifications = response.json().get("notifications", [])
+            
+            if not notifications:
+                st.info("No pending notifications.")
+                return
+                
+            for notif in notifications:
+                if notif["type"] == "purchase" and notif.get("status") == "pending_key_encryption":
+                    with st.container():
+                        st.markdown("---")
+                        st.markdown(f"### 🔔 New Purchase!")
+                        st.write(f"Asset ID: {notif['asset_id']}")
+                        st.write(f"Buyer Address: {notif['buyer_address']}")
+                        st.write(f"Purchase Date: {notif['date']}")
+                        
+                        # Add button to handle key encryption and delivery
+                        if st.button("Process Key Delivery", key=f"deliver_{notif['asset_id']}"):
+                            try:
+                                with st.status("Processing key delivery...", expanded=True) as status:
+                                    st.write("1. Encrypting asset key for buyer...")
+                                    
+                                    # Get buyer's public key from contract
+                                    buyer_key_js = f"""
+                                    <script>
+                                    async function getBuyerKey() {{
+                                        try {{
+                                            const data = web3.eth.abi.encodeFunctionCall({{
+                                                name: 'userPublicKeys',
+                                                type: 'function',
+                                                inputs: [{{ type: 'address', name: '_address' }}]
+                                            }}, ['{notif['buyer_address']}']);
+                                            
+                                            const result = await ethereum.request({{
+                                                method: 'eth_call',
+                                                params: [{{
+                                                    to: '{key_management_address}',
+                                                    data: data
+                                                }}, 'latest']
+                                            }});
+                                            
+                                            window.parent.postMessage({{
+                                                type: 'BUYER_KEY_RETRIEVED',
+                                                publicKey: result
+                                            }}, '*');
+                                            
+                                        }} catch (error) {{
+                                            console.error('Error getting buyer key:', error);
+                                            window.parent.postMessage({{
+                                                type: 'KEY_ERROR',
+                                                error: error.message
+                                            }}, '*');
+                                        }}
+                                    }}
+                                    
+                                    // Add web3 library and execute
+                                    const script = document.createElement('script');
+                                    script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
+                                    script.onload = () => {{
+                                        window.web3 = new Web3(window.ethereum);
+                                        getBuyerKey();
+                                    }};
+                                    document.head.appendChild(script);
+                                    </script>
+                                    """
+                                    
+                                    st.components.v1.html(buyer_key_js, height=0)
+                                    
+                                    # Add handler for key encryption and storage
+                                    key_handler_js = f"""
+                                    <script>
+                                    window.addEventListener('message', async function(event) {{
+                                        if (event.data.type === 'BUYER_KEY_RETRIEVED') {{
+                                            const buyerPublicKey = event.data.publicKey;
+                                            
+                                            try {{
+                                                const accounts = await ethereum.request({{ method: 'eth_requestAccounts' }});
+                                                
+                                                // Store encrypted key in contract
+                                                const storeTx = {{
+                                                    from: accounts[0],
+                                                    to: '{image_sharing_address}',
+                                                    data: web3.eth.abi.encodeFunctionCall({{
+                                                        name: 'storeEncryptedKeyForBuyer',
+                                                        type: 'function',
+                                                        inputs: [
+                                                            {{ type: 'uint256', name: '_imageId' }},
+                                                            {{ type: 'address', name: '_buyer' }},
+                                                            {{ type: 'string', name: '_encryptedKey' }}
+                                                        ]
+                                                    }}, ['{notif['asset_id']}', '{notif['buyer_address']}', buyerPublicKey])
+                                                }};
+                                                
+                                                const txHash = await ethereum.request({{
+                                                    method: 'eth_sendTransaction',
+                                                    params: [storeTx]
+                                                }});
+                                                
+                                                window.parent.postMessage({{
+                                                    type: 'KEY_STORED',
+                                                    success: true,
+                                                    txHash: txHash
+                                                }}, '*');
+                                                
+                                            }} catch (error) {{
+                                                console.error('Error storing key:', error);
+                                                window.parent.postMessage({{
+                                                    type: 'KEY_ERROR',
+                                                    error: error.message
+                                                }}, '*');
+                                            }}
+                                        }}
+                                    }});
+                                    </script>
+                                    """
+                                    
+                                    st.components.v1.html(key_handler_js, height=0)
+                                    
+                                    # Add status update handler
+                                    status_handler_js = """
+                                    <script>
+                                    window.addEventListener('message', function(event) {
+                                        if (event.data.type === 'KEY_STORED') {
+                                            if (event.data.success) {
+                                                // Update notification status in backend
+                                                fetch('%s/update-notification', {
+                                                    method: 'POST',
+                                                    headers: {
+                                                        'Content-Type': 'application/json',
+                                                        'Authorization': 'Bearer %s'
+                                                    },
+                                                    body: JSON.stringify({
+                                                        notificationId: '%s',
+                                                        status: 'key_delivered',
+                                                        txHash: event.data.txHash
+                                                    })
+                                                }).then(response => {
+                                                    if (response.ok) {
+                                                        window.location.reload();
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    });
+                                    </script>
+                                    """ % (API_URL, st.session_state.token, notif.get('_id'))
+                                    
+                                    st.components.v1.html(status_handler_js, height=0)
+                                    
+                            except Exception as e:
+                                st.error(f"Error processing key delivery: {str(e)}")
+                                
+        else:
+            st.error("Failed to fetch notifications")
+            
     except Exception as e:
-        st.error(f"An unexpected error occurred: {str(e)}")
+        st.error(f"Error: {str(e)}")
 
 def show_cookie_debug():
     st.write("### Cookie Debug")
@@ -727,87 +1141,6 @@ def show_cookie_debug():
     document.write('<p>Browser Cookies: ' + document.cookie + '</p>');
     </script>
     """)
-
-# def update_asset_details(asset_id):
-#     st.title("Update Asset Details")
-#     st.write(f"Updating asset with ID: {asset_id}")  # Debug log
-
-#     # Fetch the current asset details from the backend
-#     try:
-#         response = session.get(
-#             f"{API_URL}/user_assets",
-#             headers={"Authorization": f"Bearer {st.session_state.token}"}
-#         )
-
-#         if response.status_code != 200:
-#             st.error("Failed to fetch your assets. Please try again.")
-#             return
-
-#         # Find the asset by asset_id
-#         assets = response.json().get("assets", [])
-#         asset = next((a for a in assets if a["ipfs_hash"] == asset_id), None)
-
-#         if not asset:
-#             st.error("Asset not found.")
-#             return
-
-#     except Exception as e:
-#         st.error(f"Error fetching asset details: {str(e)}")
-#         return
-
-#     # Display the current asset details
-#     st.subheader("Current Asset Details")
-#     st.write(f"**Name:** {asset.get('name', 'Unnamed Asset')}")
-#     st.write(f"**Description:** {asset.get('description', 'No description available')}")
-#     st.write(f"**Price:** {asset.get('price', 'N/A')} ETH")
-#     st.write(f"**IPFS Hash:** {asset.get('ipfs_hash', 'N/A')}")
-
-#     # Form to update asset details
-#     with st.form("update_asset_form"):
-#         new_name = st.text_input("New Name", value=asset.get("name", ""))
-#         new_description = st.text_area("New Description", value=asset.get("description", ""))
-#         new_price = st.number_input("New Price (ETH)", value=float(asset.get("price", 0.0)), min_value=0.0, step=0.01)
-
-#         submitted = st.form_submit_button("Update Asset")
-
-#         if submitted:
-#             payload = {}
-#             if new_name:
-#                 payload["name"] = new_name
-#             if new_description:
-#                 payload["description"] = new_description
-#             if new_price is not None:
-#                 payload["price"] = new_price
-
-#             if not payload:
-#                 st.warning("No changes made to the asset.")
-#                 return
-
-#             try:
-#                 update_response = session.put(
-#                     f"{API_URL}/update-asset/{asset_id}",
-#                     json=payload,
-#                     headers={"Authorization": f"Bearer {st.session_state.token}"}
-#                 )
-
-#                 if update_response.status_code == 200:
-#                     st.success("Asset updated successfully!")
-#                     st.session_state.update_asset_id = None
-#                     st.experimental_rerun()
-#                 elif update_response.status_code == 404:
-#                     st.error("Asset not found.")
-#                 elif update_response.status_code == 400:
-#                     st.error(update_response.json().get("message", "Invalid request."))
-#                 else:
-#                     st.error("Failed to update the asset. Please try again.")
-
-#             except Exception as e:
-#                 st.error(f"Error updating asset: {str(e)}")
-
-#     # Cancel button
-#     if st.button("Cancel"):
-#         st.session_state.update_asset_id = None
-#         st.experimental_rerun()
                 
 if __name__ == "__main__":
     main()

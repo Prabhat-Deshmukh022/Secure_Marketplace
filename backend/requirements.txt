@@ -8,3 +8,4 @@ python-dotenv
 web3
 ipfshttpclient
 python-multipart
+PyNaCl==1.5.0                  # Cryptographic library for encryption

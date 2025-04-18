@@ -15,6 +15,7 @@ import os
 from functools import wraps
 import datetime
 from blockchain_manager import BlockchainManager
+from web3 import Web3 # type: ignore
 
  # type: ignore
 
@@ -232,7 +233,15 @@ def upload_asset(user):
         
         if file.filename == '':
             return jsonify({"error": "No selected file"}), 400
-        
+            
+        # First, get the current image counter from the contract
+        try:
+            image_counter = blockchain_manager.image_sharing.functions.imageCounter().call()
+            new_image_id = image_counter + 1  # The ID this image will have after listing
+        except Exception as e:
+            print(f"Error getting image counter: {str(e)}")
+            return jsonify({"error": "Failed to get image counter from blockchain"}), 500
+
         # Validate content before processing
         is_valid, message = validate_content(asset_data)
         if not is_valid:
@@ -264,7 +273,8 @@ def upload_asset(user):
             "content_type": file.content_type,
             "ipfs_hash": ipfs_hash,
             "price": price,
-            "available": list_to_marketplace  # Set based on checkbox
+            "available": list_to_marketplace,  # Set based on checkbox
+            "image_id": new_image_id  # Add the blockchain image ID
         }
         
         # Pin metadata to IPFS
@@ -411,11 +421,21 @@ def put_for_sale(user):
 @check_token
 def display_assets(user):
     try:
-        # Get all available assets from marketplace collection
+        # Get all available assets from asset collection EXCEPT current user's assets
         assets = list(
             asset_collection.find(
-                {"available":True},
-                {"_id":0,"author":1,"description":1,"ipfs_hash":1}
+                {
+                    "available": True,
+                    "author": {"$ne": user["username"]}  # Exclude current user's assets
+                },
+                {
+                    "_id": 0,
+                    "name": 1,        # Include name
+                    "author": 1,
+                    "description": 1,
+                    "ipfs_hash": 1,
+                    "price": 1        # Include price
+                }
             )
         )
 
@@ -508,6 +528,197 @@ def update_assets(user, asset_id):
     except Exception as e:
         print(f"Error in /update-asset route: {str(e)}")  # Debug log
         return jsonify({"error": "An unexpected error occurred"}), 500
+
+@app.route('/purchase-complete', methods=['POST'])
+@check_token
+def handle_purchase_completion(user):
+    try:
+        data = request.json
+        asset_id = data.get('assetId')
+        tx_hash = data.get('transactionHash')
+
+        # Initialize Web3 and verify transaction
+        w3 = Web3(Web3.HTTPProvider(os.getenv('WEB3_PROVIDER_URL')))
+        try:
+            tx_receipt = w3.eth.get_transaction_receipt(tx_hash)
+            if not tx_receipt:
+                return jsonify({"error": "Transaction not found"}), 400
+            if not tx_receipt['status']:
+                return jsonify({"error": "Transaction failed"}), 400
+        except Exception as e:
+            print(f"Transaction verification error: {str(e)}")
+            return jsonify({"error": "Failed to verify transaction"}), 400
+
+        # Update asset ownership in database
+        asset_update = asset_collection.update_one(
+            {"ipfs_hash": asset_id},
+            {
+                "$set": {
+                    "owner": user["username"],
+                    "owner_address": user.get("wallet"),
+                    "purchase_date": datetime.datetime.utcnow().isoformat(),
+                    "transaction_hash": tx_hash,
+                    "available": False
+                }
+            }
+        )
+
+        # Remove from marketplace
+        marketplace_collection.delete_one({"ipfs_hash": asset_id})
+
+        # Notify seller
+        try:
+            asset = asset_collection.find_one({"ipfs_hash": asset_id})
+            if asset:
+                user_collection.update_one(
+                    {"username": asset['author']},
+                    {
+                        "$push": {
+                            "notifications": {
+                                "type": "purchase",
+                                "asset_id": asset_id,
+                                "buyer_address": user.get("wallet"),
+                                "date": datetime.datetime.utcnow().isoformat(),
+                                "status": "pending_key_encryption"
+                            }
+                        }
+                    }
+                )
+        except Exception as notify_error:
+            print(f"Seller notification error: {str(notify_error)}")
+            # Continue since the purchase is already complete
+
+        if asset_update.modified_count > 0:
+            return jsonify({
+                "message": "Purchase completed successfully",
+                "transaction_hash": tx_hash
+            }), 200
+        else:
+            return jsonify({"error": "Asset not found"}), 404
+
+    except Exception as e:
+        print(f"Purchase completion error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/notify-seller', methods=['POST'])
+@check_token
+def notify_seller(user):
+    try:
+        data = request.json
+        asset_id = data.get('assetId')
+        buyer_address = data.get('buyerAddress')
+
+        # Get asset details
+        asset = asset_collection.find_one({"ipfs_hash": asset_id})
+        if not asset:
+            return jsonify({"error": "Asset not found"}), 404
+
+        # Store notification in seller's notifications
+        user_collection.update_one(
+            {"username": asset['author']},
+            {
+                "$push": {
+                    "notifications": {
+                        "type": "purchase",
+                        "asset_id": asset_id,
+                        "buyer_address": buyer_address,
+                        "date": datetime.datetime.utcnow().isoformat()
+                    }
+                }
+            }
+        )
+
+        return jsonify({"message": "Seller notified successfully"}), 200
+
+    except Exception as e:
+        print(f"Seller notification error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/notifications', methods=['GET'])
+@check_token
+def get_notifications(user):
+    try:
+        # Get user's notifications from database
+        user_doc = user_collection.find_one(
+            {"_id": user["_id"]},
+            {"notifications": 1}
+        )
+        
+        notifications = user_doc.get("notifications", [])
+        return jsonify({
+            "notifications": notifications
+        }), 200
+        
+    except Exception as e:
+        print(f"Error fetching notifications: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/update-notification', methods=['POST'])
+@check_token
+def update_notification_status(user):
+    try:
+        data = request.json
+        notification_id = data.get('notificationId')
+        new_status = data.get('status')
+        tx_hash = data.get('txHash')
+        
+        if not all([notification_id, new_status]):
+            return jsonify({"error": "Missing required fields"}), 400
+            
+        # Update notification status
+        result = user_collection.update_one(
+            {
+                "_id": user["_id"],
+                "notifications._id": ObjectId(notification_id)
+            },
+            {
+                "$set": {
+                    "notifications.$.status": new_status,
+                    "notifications.$.transaction_hash": tx_hash,
+                    "notifications.$.updated_at": datetime.datetime.utcnow().isoformat()
+                }
+            }
+        )
+        
+        if result.modified_count > 0:
+            return jsonify({
+                "message": "Notification updated successfully",
+                "status": new_status
+            }), 200
+        else:
+            return jsonify({"error": "Notification not found"}), 404
+            
+    except Exception as e:
+        print(f"Error updating notification: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/retrieve-key', methods=['POST'])
+@check_token
+def retrieve_encrypted_key(user):
+    try:
+        data = request.json
+        image_id = data.get('imageId')
+        
+        if not image_id:
+            return jsonify({"error": "Missing image ID"}), 400
+            
+        # Get the encrypted key from blockchain
+        try:
+            encrypted_key = image_sharing_contract.functions.getBuyerEncryptedKey(int(image_id)).call({
+                'from': user.get('wallet')
+            })
+            
+            return jsonify({
+                "encrypted_key": encrypted_key
+            }), 200
+            
+        except Exception as contract_error:
+            print(f"Contract error: {str(contract_error)}")
+            return jsonify({"error": "Failed to retrieve key from contract"}), 500
+            
+    except Exception as e:
+        print(f"Error retrieving key: {str(e)}")
+        return jsonify({"error": str(e)}), 500
     
 if __name__=="__main__":
     app.run(debug=True)
