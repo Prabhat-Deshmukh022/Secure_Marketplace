@@ -68,7 +68,26 @@ class IPFSService:
         except Exception as e:
             print(f"JSON Pin Error: {str(e)}")
             return None
-            
+
+    def download_from_ipfs(self, cid):
+        """
+        Downloads a file from IPFS given the CID.
+        
+        Returns the file content in bytes.
+        """
+        try:
+            url = f'https://gateway.pinata.cloud/ipfs/{cid}'
+            response = requests.get(url)
+
+            if response.status_code == 200:
+                return response.content
+            else:
+                print(f"Error downloading from IPFS: {response.text}")
+                return None
+        except Exception as e:
+            print(f"IPFS download exception: {str(e)}")
+            return None
+
     def get_ipfs_url(self, cid):
         """Returns full IPFS gateway URL for a CID"""
         return f"{self.ipfs_gateway}{cid}"

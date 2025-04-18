@@ -4,7 +4,7 @@ warnings.filterwarnings("ignore",category=ImportWarning)
 
 from jwt_generate import generate_token
 from db_connect import connect
-from wallet_utils import verify_signature
+from wallet_utils import verify_signature, get_public_key_from_signature
 from ipfs_service import IPFSService
 import requests
 from flask_bcrypt import Bcrypt # type: ignore
@@ -14,16 +14,28 @@ from dateutil.relativedelta import relativedelta
 import os
 from functools import wraps
 import datetime
+from bson import ObjectId # type: ignore
 from blockchain_manager import BlockchainManager
+from encryption import EncryptImageAndKey
+from decryption import DecryptImageAndKey
+from io import BytesIO
+from flask import send_file
+from eth_utils import keccak
+from web3 import Web3
 
  # type: ignore
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 blockchain_manager = BlockchainManager()
 
 SECRET=os.getenv("SECRET_KEY")
+WEB3_PROVIDER_URL = os.getenv("WEB3_PROVIDER_URL")
+
+w3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER_URL))
+
+MARKETPLACE_CONTRACT_ADDRESS = os.getenv("MARKET_PLACE_ADDRESS")
 
 from flask import Flask,request,jsonify,make_response # type: ignore
 from flask_cors import CORS # type: ignore
@@ -32,6 +44,7 @@ db=connect()
 user_collection=db["users"]
 asset_collection=db["assets"]  # Fixed typo from "assests" to "assets"
 marketplace_collection=db["marketplace"]
+purchase_collection=db["purchases"]
 
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
@@ -182,20 +195,30 @@ def verify_token(user):
 @app.route('/verify_wallet', methods=['POST'])
 @check_token
 def verify_wallet(user):
+
+    # print("IN VERIFY WALLET")
+
     data = request.json
     wallet_address = data['wallet_address']
     signature = data['signature']
+
+    # print( "THE WALLET INFO IS", wallet_address,signature )
 
     # print(f"In /verifyWallet, walletaddress is {wallet_address} and signature is {signature}")
 
     if not verify_signature(wallet_address, signature):
         print("Invalid signature")
         return jsonify({"error": "Invalid signature"}), 400
+
+    wallet_value = get_public_key_from_signature(wallet_address,signature)
     
     # Update user in database
     user_collection.update_one(
         {"_id": user["_id"]},
-        {"$set": {"wallet": wallet_address}}
+        {"$set": {
+            "wallet": wallet_address,
+            "wallet_value":wallet_value
+        }}
     )
     
     return jsonify({"message": "Wallet verified"}), 200
@@ -220,39 +243,30 @@ def validate_content(metadata):
             
     return True, "Content is valid"
 
-@app.route('/upload_asset', methods=['POST'])
+@app.route('/upload_asset_ipfs', methods=['POST'])
 @check_token
-def upload_asset(user):
+def upload_asset_ipfs(user):
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
-            
+
         file = request.files['file']
         asset_data = request.form.to_dict()
-        
+
         if file.filename == '':
             return jsonify({"error": "No selected file"}), 400
-        
-        # Validate content before processing
+
         is_valid, message = validate_content(asset_data)
         if not is_valid:
             return jsonify({"error": message}), 400
 
-        # Upload file to IPFS
-        ipfs_hash = ipfs_service.upload_to_ipfs(
-            file.stream,
-            file.filename
-        )
-        
+        ipfs_hash = ipfs_service.upload_to_ipfs(file.stream, file.filename)
         if not ipfs_hash:
             return jsonify({"error": "Failed to upload to IPFS"}), 500
 
         created_at = datetime.datetime.utcnow()
         expiry = created_at + relativedelta(months=2)
-        price = asset_data.get("price")
-        list_to_marketplace = asset_data.get("list_to_marketplace", "False").lower() == "true"
 
-        # Create metadata with sanitized content
         metadata = {
             "name": asset_data.get("name", file.filename),
             "description": asset_data.get("description", ""),
@@ -263,40 +277,62 @@ def upload_asset(user):
             "file_name": file.filename,
             "content_type": file.content_type,
             "ipfs_hash": ipfs_hash,
-            "price": price,
-            "available": list_to_marketplace  # Set based on checkbox
+            "price": asset_data.get("price"),
+            "available": asset_data.get("list_to_marketplace", "False").lower() == "true",
+            "blockchain_tx": None,
+            "asset_id": None
         }
-        
-        # Pin metadata to IPFS
-        metadata_hash = ipfs_service.pin_json(metadata)
 
-        # Add to asset collection
         asset_collection.insert_one(metadata)
+        user_collection.update_one({"_id": user["_id"]}, {"$push": {"assets": ipfs_hash}})
 
-        # Update user's assets
-        user_collection.update_one(
-            {"_id": user["_id"]},
-            {"$push": {"assets": ipfs_hash}}
-        )
-
-        # Initialize in marketplace collection only if list_to_marketplace is True
-        if list_to_marketplace:
-            marketplace_collection.insert_one({
-                **metadata,
-                "listed_at": datetime.datetime.utcnow().isoformat(),
-                "owner_id": user["_id"]
-            })
-        
         return jsonify({
             "success": True,
             "file_cid": ipfs_hash,
-            "metadata_cid": metadata_hash,
-            "file_url": ipfs_service.get_ipfs_url(ipfs_hash),
-            "metadata_url": ipfs_service.get_ipfs_url(metadata_hash)
+            "file_url": ipfs_service.get_ipfs_url(ipfs_hash)
         }), 200
-        
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/confirm_asset_registration', methods=['POST'])
+@check_token
+def confirm_asset_registration(user):
+    try:
+        data = request.get_json()
+        tx_hash = data.get('tx_hash')
+        ipfs_cid = data.get('ipfs_cid')
+        wallet_address = data.get('wallet_address')
+
+        if not tx_hash or not ipfs_cid or not wallet_address:
+            return jsonify({"error": "Missing transaction hash, CID, or wallet address."}), 400
+
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        if not receipt or receipt.status != 1:
+            return jsonify({"error": f"Transaction {tx_hash} is not confirmed or failed."}), 400
+
+        tx = w3.eth.get_transaction(tx_hash)
+        if tx['from'].lower() != wallet_address.lower():
+            return jsonify({"error": "Transaction sender does not match."}), 400
+
+        # Match the asset_id like in your contract logic
+        asset_id = int.from_bytes(keccak(text=ipfs_cid), byteorder='big')
+        # print("BACKEND, checking asset id ",asset_id)
+
+        asset_collection.update_one(
+            {"ipfs_hash": ipfs_cid},
+            {"$set": {
+                "blockchain_tx": tx_hash,
+                "asset_id": str(asset_id)
+            }}
+        )
+
+        return jsonify({"success": True, "asset_id": str(asset_id)}), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/user_assets', methods=['GET'])
 @check_token
@@ -319,6 +355,9 @@ def get_user_assets(user):
 @app.route('/sale', methods=['POST'])
 @check_token
 def put_for_sale(user):
+
+    print("IN /SALE")
+
     try:
         # Get the request payload
         data = request.json
@@ -328,33 +367,32 @@ def put_for_sale(user):
             return jsonify({"message": "CID not sent!"}), 400
 
         # Find the asset by ipfs_hash
+        asset=None
         try:
             asset = asset_collection.find_one({"ipfs_hash": ipfs_hash})
             if not asset:
                 return jsonify({"message": "Asset not found"}), 404
         except Exception as db_error:
-            print(f"Error finding asset: {str(db_error)}")
+            # print(f"Error finding asset: {str(db_error)}")
             return jsonify({"error": "Database error while finding asset"}), 500
 
         current_time = datetime.datetime.utcnow()
 
-        # Create marketplace data
-        marketplace_data = {
-            "ipfs_hash": ipfs_hash,
-            "name": asset.get("name"),
-            "description": asset.get("description"),
-            "author": asset.get("author"),
-            "wallet_address": asset.get("wallet_address"),
-            "price": asset.get("price"),
-            "file_name": asset.get("file_name"),
-            "content_type": asset.get("content_type"),
-            "created_at": asset.get("created_at"),
-            "available": True,
-            "listed_at": current_time.isoformat(),
-            "owner_id": user["_id"]
-        }
-
         try:
+
+            asset_id = int(asset.get('asset_id'))
+            price = asset.get('price')
+
+            # owner_on_chain = blockchain_manager.get_owner(asset_id)
+            # print(f"On-chain owner: {owner_on_chain}")
+            # print(f"Transaction sender: {blockchain_manager.account.address}")
+
+            # price_wei = w3.to_wei(price, 'ether')
+
+            # print(f"PRICE WEI {price_wei}")
+
+            # tx_hash = blockchain_manager.list_asset_for_sale(asset_id, price_wei)
+
             # Update asset collection first
             asset_update = asset_collection.update_one(
                 {"ipfs_hash": ipfs_hash},
@@ -364,6 +402,21 @@ def put_for_sale(user):
             if asset_update.matched_count == 0:
                 return jsonify({"error": "Asset not found in collection"}), 404
 
+            marketplace_data = {
+                "ipfs_hash": ipfs_hash,
+                "name": asset.get("name"),
+                "description": asset.get("description"),
+                "author": asset.get("author"),
+                "wallet_address": asset.get("wallet_address"),
+                "price": asset.get("price"),
+                "file_name": asset.get("file_name"),
+                "content_type": asset.get("content_type"),
+                "created_at": asset.get("created_at"),
+                "available": True,
+                "listed_at": current_time.isoformat(),
+                "owner_id": user["_id"],
+                "asset_id":str(asset_id),
+            }
             # Then handle marketplace collection
             existing_listing = marketplace_collection.find_one({"ipfs_hash": ipfs_hash})
             
@@ -373,7 +426,8 @@ def put_for_sale(user):
                     {
                         "$set": {
                             "available": True,
-                            "listed_at": current_time.isoformat()
+                            "listed_at": current_time.isoformat(),
+                            "asset_id":str(asset_id)
                         }
                     }
                 )
@@ -401,7 +455,7 @@ def put_for_sale(user):
             }), 500
 
     except Exception as e:
-        print(f"Error in /sale route: {str(e)}")
+        # print(f"Error in /sale route: {str(e)}")
         return jsonify({
             "error": "An unexpected error occurred",
             "details": str(e)
@@ -413,9 +467,23 @@ def display_assets(user):
     try:
         # Get all available assets from marketplace collection
         assets = list(
-            asset_collection.find(
-                {"available":True},
-                {"_id":0,"author":1,"description":1,"ipfs_hash":1}
+            marketplace_collection.find(
+                {
+                    "available": True,
+                    "author": {"$ne": user["username"]},  # Exclude current user's assets
+                    "listed_at": {"$ne": None}  # Only show items that have been listed
+                },
+                {
+                    "_id": 0,
+                    "author": 1,
+                    "description": 1,
+                    "ipfs_hash": 1,
+                    "name": 1,
+                    "price": 1,
+                    "file_name": 1,
+                    "listed_at": 1,
+                    "asset_id":1
+                }
             )
         )
 
@@ -426,88 +494,103 @@ def display_assets(user):
             "assets": assets
         }), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error":str(e)}), 500
 
-@app.route('/update-availability/<ipfs_hash>', methods=['PUT'])
-@check_token
-def update_availability(user, ipfs_hash):
+@app.route('/buy', methods=['POST'])
+def buy_asset():
     try:
-        # Update in marketplace collection
-        result = marketplace_collection.update_one(
-            {"ipfs_hash": ipfs_hash},
-            {
-                "$set": {
-                    "available": True,
-                    "listed_at": datetime.datetime.utcnow().isoformat()
-                }
-            }
-        )
+        data = request.json
+        asset_id = data.get('asset_id')
+        tx_hash = data.get('tx_hash')
 
-        # Update in asset collection
-        asset_collection.update_one(
-            {"ipfs_hash": ipfs_hash},
-            {"$set": {"available": True}}
-        )
+        # Assuming you have a function to save the purchase record
+        save_purchase_record(asset_id, tx_hash)
 
-        if result.modified_count > 0:
-            return jsonify({"message": "Asset availability updated successfully"}), 200
-        else:
-            return jsonify({"message": "Asset not found"}), 404
-
+        return jsonify({"status": "success", "message": "Purchase recorded successfully."})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 400
 
-@app.route('/update-asset/<asset_id>', methods=['PUT'])
+# Function to save purchase record in MongoDB
+def save_purchase_record(asset_id, tx_hash, buyer_address):
+    # Create a purchase record dictionary
+    purchase_record = {
+        "asset_id": asset_id,
+        "tx_hash": tx_hash,
+        "buyer_address": buyer_address,
+        "purchase_date": datetime.datetime.now()
+    }
+
+    # Insert the record into the purchases collection
+    purchase_collection.insert_one(purchase_record)
+
+@app.route('/confirm_sale', methods=['POST'])
 @check_token
-def update_assets(user, asset_id):
-
-    print("IN UPDATE_ASSETS")
-
+def confirm_sale(user):
     try:
-        # Convert asset_id to ObjectId
-        try:
-            asset_id = ObjectId(asset_id)
-        except Exception:
-            return jsonify({"message": "Invalid asset ID format"}), 400
-
-        # Find the asset by _id
-        asset = asset_collection.find_one({"_id": asset_id})
-
-        if not asset:
-            return jsonify({"message": "Asset not found"}), 404
-
         # Get the request payload
         data = request.json
-        price = data.get("price")
-        name = data.get("name")
-        description = data.get("description")
+        tx_hash = data.get('tx_hash')
+        ipfs_hash = data.get('ipfs_hash')
+        wallet_address = data.get('wallet_address')
 
-        # Prepare the update fields
-        update_fields = {}
-        if price is not None:
-            update_fields["price"] = price
-        if name is not None:
-            update_fields["name"] = name
-        if description is not None:
-            update_fields["description"] = description
+        if not tx_hash or not ipfs_hash or not wallet_address:
+            return jsonify({"error": "Missing required fields"}), 400
 
-        if not update_fields:
-            return jsonify({"message": "No fields to update"}), 400
+        # Find the asset by IPFS hash
+        asset = asset_collection.find_one({"ipfs_hash": ipfs_hash})
+        if not asset:
+            return jsonify({"error": "Asset not found"}), 404
 
-        # Update the asset
-        result = asset_collection.update_one(
-            {"_id": asset_id},
-            {"$set": update_fields}
+        # Validate the transaction by checking if the sender matches the wallet address
+        blockchain_owner = blockchain_manager.get_owner(int(asset['asset_id']))
+        # print(f" BLOCKCHAIN OWNER {blockchain_owner}")
+        # print(f"WALLET ID SEND {wallet_address}")
+        if blockchain_owner.lower() != wallet_address.lower():
+            return jsonify({"error": "Transaction sender does not match the asset owner"}), 400
+
+        # Confirm the sale in the database and marketplace
+        current_time = datetime.datetime.utcnow()
+
+        # Update asset collection to mark it as sold
+        asset_update = asset_collection.update_one(
+            {"ipfs_hash": ipfs_hash},
+            {"$set": {"available": True, "blockchain_tx": tx_hash, "listed_at": current_time.isoformat()}}
         )
 
-        if result.modified_count == 0:
-            return jsonify({"message": "No changes made to the asset"}), 200
+        if asset_update.matched_count == 0:
+            return jsonify({"error": "Failed to update asset status"}), 500
 
-        return jsonify({"message": "Asset updated successfully"}), 200
+        # Insert into marketplace collection
+        marketplace_data = {
+            "ipfs_hash": ipfs_hash,
+            "name": asset.get("name"),
+            "description": asset.get("description"),
+            "author": asset.get("author"),
+            "wallet_address": wallet_address,
+            "price": asset.get("price"),
+            "file_name": asset.get("file_name"),
+            "content_type": asset.get("content_type"),
+            "created_at": asset.get("created_at"),
+            "available": True,
+            "listed_at": current_time.isoformat(),
+            "owner_id": user["_id"],
+            "asset_id": str(asset['asset_id']),
+            "blockchain_receipt": tx_hash
+        }
+        marketplace_collection.insert_one(marketplace_data)
+
+        return jsonify({
+            "success": True,
+            "message": "Sale confirmed and asset listed!"
+        }), 200
 
     except Exception as e:
-        print(f"Error in /update-asset route: {str(e)}")  # Debug log
-        return jsonify({"error": "An unexpected error occurred"}), 500
-    
+        # print(f"Error in /confirm_sale route: {str(e)}")
+        return jsonify({
+            "error": "An unexpected error occurred",
+            "details": str(e)
+        }), 500
+
+
 if __name__=="__main__":
     app.run(debug=True)

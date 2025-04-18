@@ -8,25 +8,42 @@ from streamlit_javascript import st_javascript
 from web3 import Web3
 import os
 from dotenv import load_dotenv
+import sys
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 load_dotenv('.env.test')
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(os.getenv('WEB3_PROVIDER_URL')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Load contract ABIs
-with open(r'contracts\SecureImageSharing.json') as f:
-    image_sharing_abi = json.load(f)['abi']
-with open(r'contracts\KeyManagement.json') as f:
-    key_management_abi = json.load(f)['abi']
+from backend.blockchain_manager import BlockchainManager
 
-# Initialize contracts
-image_sharing_address = os.getenv('IMAGE_SHARING_CONTRACT')
-key_management_address = os.getenv('KEY_MANAGEMENT_CONTRACT')
-image_sharing_contract = w3.eth.contract(address=image_sharing_address, abi=image_sharing_abi)
-key_management_contract = w3.eth.contract(address=key_management_address, abi=key_management_abi)
+blockchain_manager = BlockchainManager()
+marketplace_address=os.getenv("MARKET_PLACE_ADDRESS")
+assetownership_address=os.getenv("ASSET_OWNERSHIP_ADDRESS")
+
+with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\ListMarketPlace.json') as f:
+    marketplace_abi = json.load(f)
+
+with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\AssetOwnerShip.json') as f:
+    assetownership_abi = json.load(f)
+
+marketplace_abi_json = json.dumps(marketplace_abi)
+assetownership_abi_json = json.dumps(assetownership_abi)
+
+# # Load contract ABIs
+# with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\SecureImageSharing.json') as f:
+#     image_sharing_abi = json.load(f)['abi']
+# with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\KeyManagement.json') as f:
+#     key_management_abi = json.load(f)['abi']
+
+# # Initialize contracts
+# image_sharing_address = os.getenv('IMAGE_SHARING_CONTRACT')
+# key_management_address = os.getenv('KEY_MANAGEMENT_CONTRACT')
+# image_sharing_contract = w3.eth.contract(address=image_sharing_address, abi=image_sharing_abi)
+# key_management_contract = w3.eth.contract(address=key_management_address, abi=key_management_abi)
 
 import time
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -352,7 +369,7 @@ def show_home():
         st.success(f"🔗 Connected: {st.session_state.wallet_address[:6]}...{st.session_state.wallet_address[-4:]}")
 
     if page == "My Assets":
-        show_my_assets()
+        upload_and_register_asset()
     elif page == "Marketplace":
         show_marketplace()
 
@@ -385,216 +402,309 @@ def logout_user():
     session.cookies.clear()
     st.rerun()
 
-def show_my_assets():
-    st.title("My Digital Assets")
-    
-    if not st.session_state.wallet_connected:
-        st.warning("Please connect your wallet first to upload and manage assets.")
-        return
 
-    # Initialize form data in session state
-    if 'form_data' not in st.session_state:
-        st.session_state.form_data = {
-            'asset_name': '',
-            'description': '',
-            'price': 0.0,
-            'file_bytes': None,
-            'file_name': None,
-            'file_type': None
+def upload_and_register_asset():
+    st.title("Upload Digital Asset & Register Ownership")
+
+    name = st.text_input("Name")
+    uploaded_file = st.file_uploader("Choose your file")
+    description = st.text_input("Asset description")
+    price = st.text_input("Set price (ETH)", "0.01")
+    list_to_marketplace = st.checkbox("List this asset on the marketplace?")
+
+    if st.button("Upload & Register"):
+        if not uploaded_file:
+            st.error("Please upload a file first.")
+            return
+
+        # Step 1: Send file to backend for IPFS upload
+        files = {'file': uploaded_file}
+        data = {
+            'description': description,
+            'price': price,
+            'list_to_marketplace': list_to_marketplace,
+            'name':name
         }
+        headers = {'Authorization': f'Bearer {st.session_state.token}'}
 
-    with st.form("upload_asset_form", clear_on_submit=True):
-        st.subheader("Upload New Asset")
-        
-        asset_name = st.text_input("Asset Name*", value=st.session_state.form_data['asset_name'])
-        description = st.text_area("Description", value=st.session_state.form_data['description'])
-        price = st.number_input("Price (ETH)*", value=float(st.session_state.form_data['price']), min_value=0.0, step=0.01)
-        file = st.file_uploader("Asset File*", type=["png", "jpg", "jpeg", "gif", "mp4", "mov", "pdf", "glb"])
-        list_to_marketplace = st.checkbox("List it to marketplace", value=False)
+        response = requests.post(f"{API_URL}/upload_asset_ipfs", files=files, data=data, headers=headers)
 
-        submitted = st.form_submit_button("Upload Asset")
+        if response.status_code != 200:
+            st.error(f"Upload failed: {response.json().get('error')}")
+            return
 
-        if submitted:
-            if not all([asset_name, file]):
-                st.error("Please fill all required fields (*)")
-            else:
-                try:
-                    # Store file bytes immediately
-                    file_bytes = file.getvalue()
-                    
-                    with st.spinner("Uploading to IPFS..."):
-                        files = {
-                            'file': (file.name, file_bytes, file.type)
-                        }
-                        data = {
-                            'name': asset_name,
-                            'description': description,
-                            'price': str(price),
-                            'list_to_marketplace': str(list_to_marketplace)
-                        }
-                        headers = {
-                            'Authorization': f'Bearer {st.session_state.token}'
-                        }
-                        
-                        response = requests.post(
-                            f"{API_URL}/upload_asset",
-                            files=files,
-                            data=data,
-                            headers=headers
-                        )
-                        
-                        if response.status_code == 200:
-                            ipfs_data = response.json()
-                            file_cid = ipfs_data['file_cid']
-                            metadata_cid = ipfs_data.get('metadata_cid', '')
+        resp = response.json()
+        file_cid = resp['file_cid']
 
-                            # Convert price to Wei
-                            price_wei = w3.to_wei(price, 'ether')
+        st.success(f"Asset uploaded to IPFS! CID: {file_cid}")
+        st.info("Now sign the ownership registration transaction with MetaMask...")
 
-                            # Build smart contract transaction
-                            st.info("Please approve the transaction in MetaMask...")
-                            
-                            # Inject JavaScript to handle the transaction
-                            tx_js = f"""
-                            <script>
-                            async function listOnBlockchain() {{
-                                try {{
-                                    const accounts = await ethereum.request({{ method: 'eth_requestAccounts' }});
-                                    
-                                    // Create the function selector for listImage(string,string,uint256)
-                                    const functionSelector = '0x' + web3.utils.keccak256('listImage(string,string,uint256)').slice(0, 8);
-                                    
-                                    // Encode parameters
-                                    const abiCoder = new web3.eth.abi.encoder;
-                                    const encodedParams = web3.eth.abi.encodeParameters(
-                                        ['string', 'string', 'uint256'],
-                                        ['{file_cid}', '{metadata_cid}', '{price_wei}']
-                                    );
-                                    
-                                    // Combine function selector and encoded parameters
-                                    const data = functionSelector + encodedParams.slice(2); // remove '0x' from params
-                                    
-                                    const tx = await ethereum.request({{
-                                        method: 'eth_sendTransaction',
-                                        params: [{{
-                                            from: '{st.session_state.wallet_address}',
-                                            to: '{image_sharing_address}',
-                                            data: data,
-                                            gas: '0x4C4B40'  // 5,000,000 gas
-                                        }}]
-                                    }});
-                                    
-                                    window.parent.postMessage({{
-                                        type: 'LISTING_COMPLETE',
-                                        txHash: tx
-                                    }}, '*');
-                                    
-                                    return tx;
-                                }} catch (error) {{
-                                    console.error('Error:', error);
-                                    window.parent.postMessage({{
-                                        type: 'LISTING_ERROR',
-                                        error: error.message
-                                    }}, '*');
-                                    return null;
-                                }}
-                            }}
-                            
-                            // Add web3 library
-                            const script = document.createElement('script');
-                            script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
-                            script.onload = () => {{
-                                window.web3 = new Web3(window.ethereum);
-                                listOnBlockchain();
-                            }};
-                            document.head.appendChild(script);
-                            </script>
-                            """
-                            st.components.v1.html(tx_js, height=0)
+        # Step 2: Inject JavaScript to call contract
+        assetownership_address_in_js = assetownership_address
+        assetownership_abi_json_in_js = assetownership_abi_json # Your ABI here
 
-                            # Wait for transaction response
-                            with st.spinner("Waiting for blockchain transaction..."):
-                                # Here we would ideally wait for the transaction event
-                                # For now, we'll just show a success message
-                                st.success("Asset uploaded and listed successfully!")
-                                
-                            # Reset form
-                            st.session_state.form_data = {
-                                'asset_name': '',
-                                'description': '',
-                                'price': 0.0,
-                                'file_bytes': None,
-                                'file_name': None,
-                                'file_type': None
-                            }
-                            st.rerun()
-                        else:
-                            st.error(f"Upload failed: {response.text}")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-    
-    st.subheader("Your Assets")
+        tx_js = f"""
+        <script>
+        async function registerAssetOnBlockchain() {{
+            try {{
+                const contractABI = {assetownership_abi_json_in_js};
+
+                if (typeof window.ethereum === 'undefined') {{
+                    if (window.parent && window.parent.ethereum) {{
+                        window.ethereum = window.parent.ethereum;
+                    }} else {{
+                        alert("MetaMask not detected! Try opening this page in a new tab.");
+                        return;
+                    }}
+                }}
+
+                const web3 = new Web3(window.ethereum);
+                const accounts = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+
+                const contract = new web3.eth.Contract(contractABI, '{assetownership_address_in_js}');
+                const transactionData = contract.methods.registerAsset('{file_cid}').encodeABI();
+
+                const transactionParameters = {{
+                    to: '{assetownership_address_in_js}',
+                    from: accounts[0],
+                    data: transactionData,
+                    gas: '0x4C4B40'
+                }};
+
+                const txHash = await window.ethereum.request({{
+                    method: 'eth_sendTransaction',
+                    params: [transactionParameters]
+                }});
+
+                alert("Transaction sent! Waiting for confirmation...");
+
+                let receipt = null;
+                while (!receipt) {{
+                    receipt = await web3.eth.getTransactionReceipt(txHash);
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }}
+
+                if (receipt.status) {{
+                    fetch("{API_URL}/confirm_asset_registration", {{
+                        method: "POST",
+                        headers: {{
+                            "Content-Type": "application/json",
+                            "Authorization": "Bearer {st.session_state.token}"
+                        }},
+                        body: JSON.stringify({{
+                            tx_hash: txHash,
+                            ipfs_cid: "{file_cid}",
+                            wallet_address: accounts[0]
+                        }})
+                    }})
+                    .then(response => response.json())
+                    .then(data => {{
+                        if (data.success) {{
+                            alert("✅ Asset successfully registered and confirmed!");
+                        }} else {{
+                            alert("❌ Server rejected the transaction: " + data.error);
+                        }}
+                    }})
+                    .catch(err => {{
+                        console.error("Error sending confirmation:", err);
+                        alert("Failed to confirm registration with server.");
+                    }});
+                }} else {{
+                    alert("❌ Transaction failed on blockchain.");
+                }}
+            }} catch (error) {{
+                console.error("Error during registration:", error);
+                alert("Error: " + error.message);
+            }}
+        }}
+
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
+        script.onload = registerAssetOnBlockchain;
+        document.head.appendChild(script);
+        </script>
+        """
+        st.components.v1.html(tx_js, height=0)
+    st.header("Assets")
     display_user_assets()
+
 
 def display_user_assets():
     """Fetch and display user's assets from backend with Update and Put for Sale buttons."""
     st.title("Your Assets")
     try:
-        # Fetch user assets
         response = session.get(
             f"{API_URL}/user_assets",
             headers={"Authorization": f"Bearer {st.session_state.token}"}
         )
-        
+
         if response.status_code == 200:
             assets = response.json().get("assets", [])
-            
+
             if not assets:
                 st.info("You haven't uploaded any assets yet.")
                 return
-                
+
             for asset in assets:
                 with st.container():
                     col1, col2, col3 = st.columns([2, 2, 1])
-                    
+
                     with col1:
                         st.subheader(asset["name"])
                         st.write(asset["description"])
                         st.write(f"💰 Price: {asset['price']} ETH")
                         st.write(f"📅 Uploaded: {asset['created_at']}")
-                    
+
                     with col2:
                         ipfs_url = f"https://gateway.pinata.cloud/ipfs/{asset['ipfs_hash']}"
                         st.markdown(f"🔗 [View on IPFS]({ipfs_url})")
                         st.write(f"📄 File: {asset['file_name']}")
-                        
+
                     with col3:
                         if not asset.get('available', False):
                             list_button_key = f"list_{asset['ipfs_hash']}"
-                            if st.button("List to Marketplace", key=list_button_key, type="primary"):
-                                with st.spinner("Listing asset to marketplace..."):
-                                    headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                                    list_response = requests.post(
-                                        f"{API_URL}/sale",
-                                        json={"ipfs_hash": asset['ipfs_hash']},
-                                        headers=headers
-                                    )
-                                    
-                                    if list_response.status_code == 200:
-                                        st.success("Asset successfully listed to marketplace!")
-                                        time.sleep(1)  # Show success message
-                                        st.rerun()
-                                    else:
-                                        error_msg = list_response.json().get('error', 'Failed to list asset')
-                                        st.error(f"Error: {error_msg}")
+
+                            # Disable the button once clicked
+                            button_disabled = False
+
+                            if 'listing_in_progress' in st.session_state and st.session_state.listing_in_progress:
+                                button_disabled = True
+                            
+                            if st.button("List to Marketplace", key=list_button_key, disabled=button_disabled):
+                                st.session_state.listing_in_progress = True
+                                st.info("Please sign the transaction via MetaMask...")
+
+                                # asset_id = int(asset["asset_id"])
+                                # price = asset["price"]
+
+                                print("ASSET, IN LISTING", asset['asset_id'])
+
+                                list_js = f"""
+                                    <script>
+                                    async function safeListAssetForSale() {{
+                                        try {{
+                                            const contractABI_AssetOwnership = {assetownership_abi_json};  // Replace with actual ABI JSON
+                                            const contractABI_Marketplace = {marketplace_abi_json};
+                                            const ownershipAddress = "{assetownership_address}";
+                                            const marketplaceAddress = "{marketplace_address}";
+                                            const ipfsCID = "{asset['ipfs_hash']}";
+                                            const priceEth = "{asset['price']}";
+                                            const expectedAssetId = "{asset['asset_id']}";
+
+                                            if (typeof window.ethereum === 'undefined') {{
+                                                if (window.parent && window.parent.ethereum) {{
+                                                    window.ethereum = window.parent.ethereum;
+                                                }} else {{
+                                                    alert("MetaMask not detected!");
+                                                    return;
+                                                }}
+                                            }}
+
+                                            const web3 = new Web3(window.ethereum);
+                                            const accounts = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+                                            const sender = accounts[0];
+
+                                            const ownershipContract = new web3.eth.Contract(contractABI_AssetOwnership, ownershipAddress);
+                                            const marketplaceContract = new web3.eth.Contract(contractABI_Marketplace, marketplaceAddress);
+
+                                            let onChainOwner = await ownershipContract.methods.getOwner(expectedAssetId).call();
+
+                                            console.log(`On-chain owner is: ${{onChainOwner}}`);
+                                            
+                                            if (onChainOwner.toLowerCase() === '0x0000000000000000000000000000000000000000') {{
+                                                alert("Asset not registered on-chain. Registering now...");
+
+                                                const registerTx = await ownershipContract.methods.registerAsset(ipfsCID).send({{
+                                                    from: sender
+                                                }});
+
+                                                console.log('Asset registered:', registerTx.transactionHash);
+                                                alert('Asset successfully registered!');
+                                            }} else if (onChainOwner.toLowerCase() !== sender.toLowerCase()) {{
+                                                alert(`Cannot list asset. Owner mismatch. Contract says: ${{onChainOwner}}`);
+                                                return;
+                                            }} else {{
+                                                console.log('Asset is already owned by you. Proceeding to listing.');
+                                            }}
+
+                                            const priceWei = web3.utils.toWei(priceEth, 'ether');
+                                            const transactionData = marketplaceContract.methods.listAssetForSale(expectedAssetId, priceWei).encodeABI();
+
+                                            const txParams = {{
+                                                to: marketplaceAddress,
+                                                from: sender,
+                                                data: transactionData,
+                                                gas: '0x4C4B40'
+                                            }};
+
+                                            const txHash = await window.ethereum.request({{
+                                                method: 'eth_sendTransaction',
+                                                params: [txParams]
+                                            }});
+
+                                            console.log("Transaction sent! Hash:", txHash);
+
+                                            let receipt = null;
+                                            while (!receipt) {{
+                                                console.log('Waiting for receipt...');
+                                                receipt = await web3.eth.getTransactionReceipt(txHash);
+                                                await new Promise(resolve => setTimeout(resolve, 3000));
+                                            }}
+
+                                            if (receipt.status) {{
+                                                alert("Asset listed on blockchain! Confirming with server...");
+
+                                                fetch("{API_URL}/confirm_sale", {{
+                                                    method: "POST",
+                                                    headers: {{
+                                                        "Content-Type": "application/json",
+                                                        "Authorization": "Bearer {st.session_state.token}"
+                                                    }},
+                                                    body: JSON.stringify({{
+                                                        tx_hash: txHash,
+                                                        ipfs_hash: ipfsCID,
+                                                        wallet_address: sender
+                                                    }})
+                                                }})
+                                                .then(response => response.json())
+                                                .then(data => {{
+                                                    if (data.success) {{
+                                                        alert("Sale listing confirmed on server!");
+                                                        window.location.reload();
+                                                    }} else {{
+                                                        alert("Server rejected the sale: " + data.error);
+                                                    }}
+                                                }})
+                                                .catch(err => {{
+                                                    console.error("Error confirming with server:", err);
+                                                    alert("Could not confirm with server.");
+                                                }});
+                                            }} else {{
+                                                alert("Blockchain transaction failed.");
+                                            }}
+
+                                        }} catch (error) {{
+                                            console.error("Error during sale listing:", error);
+                                            alert("Error: " + error.message);
+                                        }}
+                                    }}
+
+                                    const script = document.createElement('script');
+                                    script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
+                                    script.onload = safeListAssetForSale;
+                                    document.head.appendChild(script);
+                                    </script>
+                                    """
+
+                                st.components.v1.html(list_js, height=0)
+
                         else:
                             st.success("🏪 Listed in Marketplace")
-                    
                     st.markdown("---")
         else:
             st.error("Failed to fetch assets.")
     except Exception as e:
-        st.error(f"Error loading assets: {str(e)}")    
+        st.error(f"Error loading assets: {str(e)}")
 
 def show_marketplace():
     st.title("Marketplace")
@@ -605,7 +715,6 @@ def show_marketplace():
         return
 
     try:
-        # Fetch listings from MongoDB through backend
         response = requests.get(
             f"{API_URL}/display-all-assets",
             headers={"Authorization": f"Bearer {st.session_state.token}"}
@@ -626,91 +735,111 @@ def show_marketplace():
                         st.subheader(asset.get("name", "Untitled Asset"))
                         st.write(asset.get("description", "No description available"))
                         st.write(f"👤 Author: {asset.get('author', 'Unknown')}")
-                        
-                        # Add IPFS link to view the file
-                        ipfs_hash = asset.get("ipfs_hash")
-                        if ipfs_hash:
-                            ipfs_url = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
-                            st.markdown(f"🔗 [View on IPFS]({ipfs_url})")
-                            
+
                     with col2:
                         price = float(asset.get("price", 0))
                         st.write(f"💰 Price: {price} ETH")
-                        
-                        if st.button(f"Purchase", key=f"buy_{ipfs_hash}"):
-                            price_wei = w3.to_wei(price, 'ether')
-                            
-                            # Check balance
-                            balance = w3.eth.get_balance(st.session_state.wallet_address)
-                            if balance < price_wei:
-                                st.error("Insufficient balance!")
-                                return
 
-                            st.info("Please approve the transaction in MetaMask...")
-                            
-                            # Inject JavaScript for MetaMask transaction
-                            purchase_js = f"""
-                            <script>
-                            async function purchaseAsset() {{
-                                try {{
-                                    // Add web3 library
-                                    const script = document.createElement('script');
-                                    script.src = 'https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js';
-                                    script.onload = async () => {{
-                                        window.web3 = new Web3(window.ethereum);
-                                        
-                                        // Create the function selector for purchaseImage(uint256)
-                                        const functionSelector = '0x' + web3.utils.keccak256('purchaseImage(uint256)').slice(0, 8);
-                                        
-                                        // Encode parameter (image ID = 1)
-                                        const encodedParams = web3.eth.abi.encodeParameters(['uint256'], [1]);
-                                        
-                                        // Combine function selector and encoded parameters
-                                        const data = functionSelector + encodedParams.slice(2);
-                                        
-                                        const tx = await ethereum.request({{
-                                            method: 'eth_sendTransaction',
-                                            params: [{{
-                                                from: '{st.session_state.wallet_address}',
-                                                to: '{image_sharing_address}',
-                                                value: '0x{price_wei:x}',
-                                                data: data,
-                                                gas: '0x4C4B40'
-                                            }}]
-                                        }});
-                                        
-                                        window.parent.postMessage({{
-                                            type: 'PURCHASE_COMPLETE',
-                                            txHash: tx
-                                        }}, '*');
-                                    }};
-                                    document.head.appendChild(script);
-                                    
-                                }} catch (error) {{
-                                    console.error('Error:', error);
-                                    window.parent.postMessage({{
-                                        type: 'PURCHASE_ERROR',
-                                        error: error.message
-                                    }}, '*');
-                                    return null;
-                                }}
+                        asset_id = int(asset.get("asset_id", "null"))
+
+                        print("ASSET ", asset)
+                        print("ASSET ID", asset_id)
+
+                        # JavaScript code to trigger MetaMask on button click
+                        html_code = f"""
+                    <script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+                    <script>
+                    async function purchaseAsset() {{
+                        console.log("Checking for MetaMask...");
+
+                        // Check if MetaMask (window.ethereum) is available
+                        if (typeof window.ethereum === 'undefined') {{
+                            console.log("MetaMask is not installed!");
+
+                            // If the app is inside an iframe, try accessing window.parent.ethereum
+                            if (window.parent && window.parent.ethereum) {{
+                                console.log("Detected inside an iframe! Using window.parent.ethereum.");
+                                window.ethereum = window.parent.ethereum;
+                            }} else {{
+                                alert("MetaMask not detected! Try opening this page in a new tab.");
+                                return;
                             }}
-                            purchaseAsset();
-                            </script>
-                            """
-                            st.components.v1.html(purchase_js, height=0)
-                            
-                            with st.spinner("Processing purchase..."):
-                                st.success("Purchase successful! You can now access this asset.")
-                                st.markdown(f"🔗 [View your purchased asset]({ipfs_url})")
+                        }}
 
-                    st.markdown("---")
+                        // Initialize Web3 with MetaMask provider
+                        const web3 = new Web3(window.ethereum);
+                        console.log('web3 initialized')
+
+                        // Request MetaMask accounts
+                        await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+                        console.log('metamask account requested')
+
+                        const contractABI = {marketplace_abi_json}; // Embed the ABI as JSON
+                        const contractAddress = "{marketplace_address}";
+                        const contract = new web3.eth.Contract(contractABI, contractAddress);
+                        console.log('contract here'+contract)
+
+                        const priceInWei = web3.utils.toWei("{price}", 'ether');
+                        const accounts = await web3.eth.getAccounts();
+                        const sender = accounts[0];
+                        console.log('sender is '+sender)
+
+                        try {{
+                            // Send the transaction to purchase the asset
+                            const tx = await contract.methods.buyAsset("{asset_id}").send({{
+                                from: sender,
+                                value: priceInWei
+                            }});
+                            console.log("after sender received"+tx)
+
+                            const txHash = tx.transactionHash;
+
+                            console.log('txHash is'+txHash)
+
+                            // Ownership transfer must happen as a separate transaction after purchase.
+                            const assetOwnershipABI = {assetownership_abi_json}; // Embed the ABI for AssetOwnership
+                            const assetOwnershipAddress = "{assetownership_address}"; // AssetOwnership contract address
+                            const assetOwnershipContract = new web3.eth.Contract(assetOwnershipABI, assetOwnershipAddress);
+
+                            // Transfer ownership to the buyer
+                            await assetOwnershipContract.methods.transferOwnership("{asset_id}", sender).send({{
+                                from: sender
+                            }});
+
+                            // Notify the backend about the purchase
+                            fetch("{API_URL}/buy", {{
+                                method: "POST",
+                                headers: {{
+                                    "Content-Type": "application/json",
+                                    "Authorization": "Bearer {st.session_state.token}"
+                                }},
+                                body: JSON.stringify({{
+                                    "asset_id": {asset_id},
+                                    "tx_hash": txHash
+                                }})
+                            }}).then(res => res.json()).then(data => {{
+                                if (data.status === "success") {{
+                                    alert("✅ Purchase successful and saved!");
+                                    window.location.reload();  // Reload the page to reflect the change
+                                }} else {{
+                                    alert("⚠️ Error: " + JSON.stringify(data));
+                                }}
+                            }});
+
+                        }} catch (err) {{
+                            console.error(err);
+                            alert("Transaction failed or rejected.");
+                        }}
+                    }}
+                    </script>
+
+                    <button onclick="purchaseAsset()">Purchase</button>
+                    """
+                    st.components.v1.html(html_code, height=150)
+
+                st.markdown("---")
         else:
-            st.error("Failed to fetch marketplace listings")
-            
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-
+            st.error("Failed to fetch marketplace listings.")
     except requests.exceptions.RequestException as e:
         st.error(f"Network error: {str(e)}")
     except Exception as e:
@@ -728,86 +857,6 @@ def show_cookie_debug():
     </script>
     """)
 
-# def update_asset_details(asset_id):
-#     st.title("Update Asset Details")
-#     st.write(f"Updating asset with ID: {asset_id}")  # Debug log
-
-#     # Fetch the current asset details from the backend
-#     try:
-#         response = session.get(
-#             f"{API_URL}/user_assets",
-#             headers={"Authorization": f"Bearer {st.session_state.token}"}
-#         )
-
-#         if response.status_code != 200:
-#             st.error("Failed to fetch your assets. Please try again.")
-#             return
-
-#         # Find the asset by asset_id
-#         assets = response.json().get("assets", [])
-#         asset = next((a for a in assets if a["ipfs_hash"] == asset_id), None)
-
-#         if not asset:
-#             st.error("Asset not found.")
-#             return
-
-#     except Exception as e:
-#         st.error(f"Error fetching asset details: {str(e)}")
-#         return
-
-#     # Display the current asset details
-#     st.subheader("Current Asset Details")
-#     st.write(f"**Name:** {asset.get('name', 'Unnamed Asset')}")
-#     st.write(f"**Description:** {asset.get('description', 'No description available')}")
-#     st.write(f"**Price:** {asset.get('price', 'N/A')} ETH")
-#     st.write(f"**IPFS Hash:** {asset.get('ipfs_hash', 'N/A')}")
-
-#     # Form to update asset details
-#     with st.form("update_asset_form"):
-#         new_name = st.text_input("New Name", value=asset.get("name", ""))
-#         new_description = st.text_area("New Description", value=asset.get("description", ""))
-#         new_price = st.number_input("New Price (ETH)", value=float(asset.get("price", 0.0)), min_value=0.0, step=0.01)
-
-#         submitted = st.form_submit_button("Update Asset")
-
-#         if submitted:
-#             payload = {}
-#             if new_name:
-#                 payload["name"] = new_name
-#             if new_description:
-#                 payload["description"] = new_description
-#             if new_price is not None:
-#                 payload["price"] = new_price
-
-#             if not payload:
-#                 st.warning("No changes made to the asset.")
-#                 return
-
-#             try:
-#                 update_response = session.put(
-#                     f"{API_URL}/update-asset/{asset_id}",
-#                     json=payload,
-#                     headers={"Authorization": f"Bearer {st.session_state.token}"}
-#                 )
-
-#                 if update_response.status_code == 200:
-#                     st.success("Asset updated successfully!")
-#                     st.session_state.update_asset_id = None
-#                     st.experimental_rerun()
-#                 elif update_response.status_code == 404:
-#                     st.error("Asset not found.")
-#                 elif update_response.status_code == 400:
-#                     st.error(update_response.json().get("message", "Invalid request."))
-#                 else:
-#                     st.error("Failed to update the asset. Please try again.")
-
-#             except Exception as e:
-#                 st.error(f"Error updating asset: {str(e)}")
-
-#     # Cancel button
-#     if st.button("Cancel"):
-#         st.session_state.update_asset_id = None
-#         st.experimental_rerun()
                 
 if __name__ == "__main__":
     main()
