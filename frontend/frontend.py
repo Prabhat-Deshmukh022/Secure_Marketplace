@@ -815,7 +815,8 @@ def show_marketplace():
                                 }},
                                 body: JSON.stringify({{
                                     "asset_id": {asset_id},
-                                    "tx_hash": txHash
+                                    "tx_hash": txHash,
+                                    "sender":sender
                                 }})
                             }}).then(res => res.json()).then(data => {{
                                 if (data.status === "success") {{

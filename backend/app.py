@@ -502,9 +502,10 @@ def buy_asset():
         data = request.json
         asset_id = data.get('asset_id')
         tx_hash = data.get('tx_hash')
+        buyer_address = data.get('sender')
 
         # Assuming you have a function to save the purchase record
-        save_purchase_record(asset_id, tx_hash)
+        save_purchase_record(asset_id, tx_hash,buyer_address)
 
         return jsonify({"status": "success", "message": "Purchase recorded successfully."})
     except Exception as e:
