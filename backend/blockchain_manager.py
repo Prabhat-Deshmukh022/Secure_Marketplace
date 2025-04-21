@@ -23,18 +23,18 @@ class BlockchainManager:
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(os.getenv('WEB3_PROVIDER_URL')))
         
-        # Load contract ABIs
-        with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\SecureImageSharing.json') as f:
-            self.image_sharing_abi = json.load(f)['abi']
-        with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\KeyManagement.json') as f:
-            self.key_management_abi = json.load(f)['abi']
+        # # Load contract ABIs
+        # with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\SecureImageSharing.json') as f:
+        #     self.image_sharing_abi = json.load(f)['abi']
+        # with open(r'D:\6th_Semester\BC_PES1UG22CS419\Project\decentralized_storage_project\contracts\KeyManagement.json') as f:
+        #     self.key_management_abi = json.load(f)['abi']
             
-        # Contract addresses with checksum
-        self.image_sharing_address = Web3.to_checksum_address(os.getenv('IMAGE_SHARING_CONTRACT'))
-        self.key_management_address = Web3.to_checksum_address(os.getenv('KEY_MANAGEMENT_CONTRACT'))
-        # Contract addresses (after deployment)
-        self.image_sharing_address = os.getenv('IMAGE_SHARING_CONTRACT')
-        self.key_management_address = os.getenv('KEY_MANAGEMENT_CONTRACT')
+        # # Contract addresses with checksum
+        # self.image_sharing_address = Web3.to_checksum_address(os.getenv('IMAGE_SHARING_CONTRACT'))
+        # self.key_management_address = Web3.to_checksum_address(os.getenv('KEY_MANAGEMENT_CONTRACT'))
+        # # Contract addresses (after deployment)
+        # self.image_sharing_address = os.getenv('IMAGE_SHARING_CONTRACT')
+        # self.key_management_address = os.getenv('KEY_MANAGEMENT_CONTRACT')
 
         self.account = w3.eth.account.from_key(private_key)
 
@@ -48,15 +48,15 @@ class BlockchainManager:
             abi=asset_ownership_abi
         )
         
-        # Initialize contracts
-        self.image_sharing = self.w3.eth.contract(
-            address=self.image_sharing_address,
-            abi=self.image_sharing_abi
-        )
-        self.key_management = self.w3.eth.contract(
-            address=self.key_management_address,
-            abi=self.key_management_abi
-        )
+        # # Initialize contracts
+        # self.image_sharing = self.w3.eth.contract(
+        #     address=self.image_sharing_address,
+        #     abi=self.image_sharing_abi
+        # )
+        # self.key_management = self.w3.eth.contract(
+        #     address=self.key_management_address,
+        #     abi=self.key_management_abi
+        # )
 
     def get_transaction_params(self, from_address, value=0):
         """Get standard transaction parameters"""

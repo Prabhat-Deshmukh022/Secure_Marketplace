@@ -20,12 +20,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.blockchain_manager import BlockchainManager
 
-# Initialize contracts
-image_sharing_address = Web3.to_checksum_address(os.getenv('IMAGE_SHARING_CONTRACT'))
-key_management_address = Web3.to_checksum_address(os.getenv('KEY_MANAGEMENT_CONTRACT'))
-image_sharing_contract = w3.eth.contract(address=image_sharing_address, abi=image_sharing_abi)
-key_management_contract = w3.eth.contract(address=key_management_address, abi=key_management_abi)
-blockchain_manager = BlockchainManager()
+# # Initialize contracts
+# image_sharing_address = Web3.to_checksum_address(os.getenv('IMAGE_SHARING_CONTRACT'))
+# key_management_address = Web3.to_checksum_address(os.getenv('KEY_MANAGEMENT_CONTRACT'))
+# image_sharing_contract = w3.eth.contract(address=image_sharing_address, abi=image_sharing_abi)
+# key_management_contract = w3.eth.contract(address=key_management_address, abi=key_management_abi)
+# blockchain_manager = BlockchainManager()
 marketplace_address=os.getenv("MARKET_PLACE_ADDRESS")
 assetownership_address=os.getenv("ASSET_OWNERSHIP_ADDRESS")
 
